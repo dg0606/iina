@@ -67,9 +67,7 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
       TraktScrobbler.shared.skipResumeOnce = true
     }
     // Send credentials as a header instead of embedding them in the URL.
-    if let auth = WebDAVConfig.basicAuthHeader {
-      player.mpv.setString(MPVOption.Network.httpHeaderFields, "Authorization: \(auth)")
-    }
+    WebDAVConfig.applyAuth(to: player)
     player.openURLString(url.absoluteString)
     window?.close()
   }
@@ -98,12 +96,18 @@ final class LibraryViewModel: ObservableObject {
   @Published var resumeEntries: [WebDAVEntry] = []
   /// Recently played items that are not in progress ("Vistos recientemente").
   @Published var recentEntries: [WebDAVEntry] = []
+  /// Ids of the "Continuar viendo" entries that are the next episode after one that was finished.
+  @Published var nextUp: Set<String> = []
+  private var nextUpTask: Task<Void, Never>?
 
   private(set) var stack: [URL] = []
   private var trakt: [String: Double] = [:]
   private let client = WebDAVClient()
+  private let finder = NextEpisodeFinder()
 
   var canGoUp: Bool { !stack.isEmpty }
+  /// Progress saved in Trakt, keyed like `MetadataStore.key(for:)`.
+  var traktMap: [String: Double] { trakt }
 
   func matches(_ entry: WebDAVEntry) -> Bool {
     filter.isEmpty || entry.name.localizedCaseInsensitiveContains(filter)
@@ -171,29 +175,58 @@ final class LibraryViewModel: ObservableObject {
   }
 
   /// Builds "Continuar viendo" and "Vistos recientemente" from IINA's playback history, limited to the configured server.
+  /// When an episode was finished (it is in the history but has no saved position left), its next episode is added
+  /// to "Continuar viendo".
   func loadRecents() {
     guard let host = URL(string: WebDAVConfig.url)?.host else { return }
     let recent = HistoryController.shared.history
       .filter { !$0.url.isFileURL && $0.url.host == host }
       .sorted { $0.addedDate > $1.addedDate }
-    var resume: [WebDAVEntry] = []
+    var resume: [(date: Date, entry: WebDAVEntry)] = []
     var others: [WebDAVEntry] = []
+    var finished: [(date: Date, url: URL)] = []
+    var seenShows = Set<String>()
     for item in recent {
       let href = URLComponents(url: item.url, resolvingAgainstBaseURL: false)?.percentEncodedPath ?? item.url.path
       let name = item.url.lastPathComponent
       guard !href.isEmpty, !name.isEmpty else { continue }
       let entry = WebDAVEntry(href: href, name: name, isDirectory: false, size: nil)
       let media = TraktMedia.parse(fileName: name, folders: Array(item.url.pathComponents.dropLast()))
+      var showKey: String?
+      if case let .episode(show, _, _)? = media { showKey = TraktMedia.normalize(show) }
       if let info = ProgressResolver.resolve(url: item.url, media: media, runtimeMinutes: nil, trakt: trakt),
          info.percent < 95 {
-        resume.append(entry)
+        resume.append((item.addedDate, entry))
         progress[entry.id] = info
+        if let showKey { seenShows.insert(showKey) }      // already in progress: no "next" needed
       } else {
         others.append(entry)
+        // Only the most recent entry of each show can have a "next episode".
+        if let showKey, !seenShows.contains(showKey) {
+          seenShows.insert(showKey)
+          finished.append((item.addedDate, item.url))
+        }
       }
     }
-    resumeEntries = Array(resume.prefix(40))
+    resumeEntries = resume.prefix(40).map(\.entry)
     recentEntries = Array(others.prefix(60))
+    nextUp = []
+
+    nextUpTask?.cancel()
+    guard !finished.isEmpty else { return }
+    let base = resume
+    nextUpTask = Task {
+      var extra: [(date: Date, entry: WebDAVEntry)] = []
+      for item in finished.prefix(8) {
+        if Task.isCancelled { return }
+        guard let next = await finder.next(after: item.url),
+              !base.contains(where: { $0.entry.id == next.id }) else { continue }
+        extra.append((item.date, next))
+      }
+      if Task.isCancelled || extra.isEmpty { return }
+      resumeEntries = (base + extra).sorted { $0.date > $1.date }.prefix(40).map(\.entry)
+      nextUp = Set(extra.map(\.entry.id))
+    }
   }
 
   /// Fetches poster/info and the saved position for a file. Called lazily by each visible card.
@@ -232,6 +265,7 @@ struct LibraryView: View {
   @StateObject private var model = LibraryViewModel()
   @ObservedObject private var lists = ListsStore.shared
   @State private var selected: WebDAVEntry?
+  @State private var seriesEntry: WebDAVEntry?
   @State private var showSettings = false
   @State private var newListName = ""
   @State private var showNewList = false
@@ -264,7 +298,17 @@ struct LibraryView: View {
     .sheet(item: $selected) { entry in
       LibraryDetailView(entry: entry, meta: model.metadata[entry.id], progress: model.progress[entry.id],
                         onPlay: { fromStart in selected = nil; onPlay(entry, fromStart) },
+                        onEpisodes: {
+                          selected = nil
+                          // Presenting a sheet right after dismissing another one needs a moment.
+                          DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { seriesEntry = entry }
+                        },
                         onClose: { selected = nil })
+    }
+    .sheet(item: $seriesEntry) { entry in
+      SeriesView(entry: entry, trakt: model.traktMap,
+                 onPlay: { file, fromStart in seriesEntry = nil; onPlay(file, fromStart) },
+                 onClose: { seriesEntry = nil })
     }
     .sheet(isPresented: $showNewList) { nameSheet(title: "Nueva lista", text: $newListName) {
       if let id = lists.create(name: newListName) { model.tab = .list(id) }
@@ -377,7 +421,8 @@ struct LibraryView: View {
   private func grid(_ items: [WebDAVEntry]) -> some View {
     LazyVGrid(columns: columns, spacing: 28) {
       ForEach(items) { entry in
-        LibraryCard(entry: entry, meta: model.metadata[entry.id], progress: model.progress[entry.id])
+        LibraryCard(entry: entry, meta: model.metadata[entry.id], progress: model.progress[entry.id],
+                    badge: model.nextUp.contains(entry.id) ? "Siguiente episodio" : nil)
           .onTapGesture { tapped(entry) }
           .contextMenu { listMenu(for: entry) }
           .task { await model.enrich(entry) }
@@ -395,6 +440,10 @@ struct LibraryView: View {
 
   @ViewBuilder
   private func listMenu(for entry: WebDAVEntry) -> some View {
+    if entry.isDirectory || TraktMedia.parse(fileName: entry.name, folders: []).map({ if case .episode = $0 { return true } else { return false } }) == true {
+      Button("Ver temporadas y capítulos…") { seriesEntry = entry }
+      Divider()
+    }
     ForEach(lists.lists) { list in
       let inList = lists.contains(entry, in: list.id)
       Button(inList ? "Quitar de \(list.name)" : "Agregar a \(list.name)") { lists.toggle(entry, in: list.id) }
@@ -491,6 +540,7 @@ struct LibraryCard: View {
   let entry: WebDAVEntry
   let meta: MediaMetadata?
   let progress: ProgressInfo?
+  var badge: String? = nil
 
   @State private var hovering = false
 
@@ -508,7 +558,9 @@ struct LibraryCard: View {
         if let sub = subtitle { Text(sub).foregroundColor(.secondary) }
         if let rating = meta?.rating, rating > 0 { Text("⭐ \(String(format: "%.1f", rating))") }
       }.font(.caption)
-      if let progress {
+      if let badge {
+        Text(badge).font(.caption2.weight(.semibold)).foregroundColor(.accentColor).lineLimit(1)
+      } else if let progress {
         Text(progress.label).font(.caption2).foregroundColor(.accentColor).lineLimit(1)
       }
     }
@@ -540,6 +592,7 @@ struct LibraryDetailView: View {
   let meta: MediaMetadata?
   let progress: ProgressInfo?
   let onPlay: (Bool) -> Void
+  let onEpisodes: () -> Void
   let onClose: () -> Void
 
   @ObservedObject private var lists = ListsStore.shared
@@ -572,18 +625,19 @@ struct LibraryDetailView: View {
           Button(progress != nil ? "▶︎ Continuar" : "▶︎ Reproducir") { onPlay(false) }
             .keyboardShortcut(.defaultAction)
           if progress != nil { Button("Desde el inicio") { onPlay(true) } }
+          if meta?.season != nil { Button("Capítulos") { onEpisodes() } }
           Menu("★ Listas") {
             ForEach(lists.lists) { list in
               Button((lists.contains(entry, in: list.id) ? "✓ " : "") + list.name) { lists.toggle(entry, in: list.id) }
             }
           }.fixedSize()
           Spacer()
-          Button("Cerrar", action: onClose)
+          Button("Cerrar", action: onClose).keyboardShortcut(.cancelAction)
         }
       }
     }
     .padding(22)
-    .frame(width: 700, height: 400)
+    .frame(width: 780, height: 420)
   }
 }
 
@@ -623,6 +677,18 @@ struct WebDAVSettingsView: View {
   @State private var password = WebDAVConfig.password
   @State private var openOnLaunch = WebDAVConfig.openOnLaunch
   @State private var tmdbKey = TMDBConfig.apiKey
+  @State private var nuvioURL = NuvioConfig.backendURL
+  @State private var nuvioKey = NuvioConfig.anonKey
+  @State private var nuvioEmail = NuvioConfig.email
+  @State private var nuvioPassword = NuvioConfig.password
+  @State private var nuvioProfile = NuvioConfig.profileIndex
+  @State private var nuvioEnabled = NuvioConfig.enabled
+  @State private var nuvioStatus = ""
+  @State private var nuvioBusy = false
+  @State private var assistNext = AssistConfig.showNext
+  @State private var assistAutoplay = AssistConfig.autoplayNext
+  @State private var assistSkip = AssistConfig.skipIntro
+  @State private var assistSeconds = AssistConfig.skipSeconds
   @State private var traktClientId = TraktConfig.clientId
   @State private var traktSecret = TraktConfig.clientSecret
   @State private var traktEnabled = TraktConfig.enabled
@@ -631,6 +697,7 @@ struct WebDAVSettingsView: View {
   @State private var connecting = false
 
   var body: some View {
+    ScrollView {
     VStack(alignment: .leading, spacing: 10) {
       Text("Servidor WebDAV").font(.headline)
       TextField("https://servidor.com/dav/peliculas/", text: $url).textFieldStyle(.roundedBorder)
@@ -639,17 +706,41 @@ struct WebDAVSettingsView: View {
       Toggle("Abrir la biblioteca al iniciar", isOn: $openOnLaunch)
 
       Divider().padding(.vertical, 4)
+      Text("Reproducción").font(.headline)
+      Toggle("Mostrar «Siguiente episodio» al final", isOn: $assistNext)
+      Toggle("Reproducir el siguiente episodio automáticamente", isOn: $assistAutoplay).disabled(!assistNext)
+      Toggle("Mostrar «Saltar intro»", isOn: $assistSkip)
+      Stepper("Si el archivo no tiene capítulos, saltar \(assistSeconds) s", value: $assistSeconds, in: 10...240, step: 5)
+        .disabled(!assistSkip)
+
+      Divider().padding(.vertical, 4)
       Text("TMDB (carátulas, sinopsis y rating)").font(.headline)
       Text("API key gratuita en themoviedb.org → Ajustes → API. Acepta la clave v3 o el token de lectura v4.")
         .font(.caption).foregroundColor(.secondary)
       SecureField("API key de TMDB", text: $tmdbKey).textFieldStyle(.roundedBorder)
 
       Divider().padding(.vertical, 4)
+      Text("Nuvio (tu progreso aparece en Nuvio web y en el celular)").font(.headline)
+      Text("Usa tu cuenta de Nuvio. La URL y la clave pública son las del backend que usa tu Nuvio.")
+        .font(.caption).foregroundColor(.secondary)
+      TextField("URL del backend (https://…)", text: $nuvioURL).textFieldStyle(.roundedBorder)
+      SecureField("Clave pública (anon key)", text: $nuvioKey).textFieldStyle(.roundedBorder)
+      TextField("Correo de Nuvio", text: $nuvioEmail).textFieldStyle(.roundedBorder)
+      SecureField("Contraseña de Nuvio", text: $nuvioPassword).textFieldStyle(.roundedBorder)
+      Stepper("Perfil de Nuvio: \(nuvioProfile)", value: $nuvioProfile, in: 1...6)
+      Toggle("Enviar progreso a Nuvio", isOn: $nuvioEnabled)
+      HStack {
+        Button(nuvioBusy ? "Probando…" : "Probar conexión") { testNuvio() }
+          .disabled(nuvioBusy || nuvioURL.isEmpty || nuvioKey.isEmpty || nuvioEmail.isEmpty || nuvioPassword.isEmpty)
+        Text(nuvioStatus).font(.caption).foregroundColor(.secondary).lineLimit(3)
+      }
+
+      Divider().padding(.vertical, 4)
       Text("Trakt (progreso sincronizado)").font(.headline)
-      Text("Crea una app en trakt.tv/oauth/applications (redirect: urn:ietf:wg:oauth:2.0:oob) y pega sus credenciales.")
+      Text("Crea una app en trakt.tv/oauth/applications (redirect: urn:ietf:wg:oauth:2.0:oob). Pega el Client ID; el secret es opcional (las apps nuevas no lo tienen).")
         .font(.caption).foregroundColor(.secondary)
       TextField("Client ID", text: $traktClientId).textFieldStyle(.roundedBorder)
-      SecureField("Client Secret", text: $traktSecret).textFieldStyle(.roundedBorder)
+      SecureField("Client Secret (opcional)", text: $traktSecret).textFieldStyle(.roundedBorder)
       Toggle("Enviar progreso a Trakt", isOn: $traktEnabled)
       HStack {
         if traktConnected {
@@ -657,7 +748,7 @@ struct WebDAVSettingsView: View {
           Button("Desconectar") { TraktAPI.shared.disconnect(); traktConnected = false; traktStatus = "" }
         } else {
           Button(connecting ? "Esperando aprobación…" : "Conectar Trakt") { connect() }
-            .disabled(connecting || traktClientId.isEmpty || traktSecret.isEmpty)
+            .disabled(connecting || traktClientId.isEmpty)
         }
         Text(traktStatus).font(.caption).foregroundColor(.secondary).lineLimit(2)
       }
@@ -672,7 +763,8 @@ struct WebDAVSettingsView: View {
       }
     }
     .padding(20)
-    .frame(width: 480)
+    }
+    .frame(width: 520, height: 680)
   }
 
   private func save() {
@@ -681,9 +773,42 @@ struct WebDAVSettingsView: View {
     WebDAVConfig.password = password
     WebDAVConfig.openOnLaunch = openOnLaunch
     TMDBConfig.apiKey = tmdbKey
+    NuvioConfig.backendURL = nuvioURL
+    NuvioConfig.anonKey = nuvioKey
+    NuvioConfig.email = nuvioEmail
+    NuvioConfig.password = nuvioPassword
+    NuvioConfig.profileIndex = nuvioProfile
+    NuvioConfig.enabled = nuvioEnabled
+    AssistConfig.showNext = assistNext
+    AssistConfig.autoplayNext = assistAutoplay
+    AssistConfig.skipIntro = assistSkip
+    AssistConfig.skipSeconds = assistSeconds
     TraktConfig.clientId = traktClientId
     TraktConfig.clientSecret = traktSecret
     TraktConfig.enabled = traktEnabled
+  }
+
+  private func testNuvio() {
+    NuvioConfig.backendURL = nuvioURL
+    NuvioConfig.anonKey = nuvioKey
+    NuvioConfig.email = nuvioEmail
+    NuvioConfig.password = nuvioPassword
+    NuvioAPI.shared.disconnect()
+    nuvioBusy = true
+    nuvioStatus = "Iniciando sesión…"
+    Task {
+      do {
+        try await NuvioAPI.shared.signIn()
+        let profiles = try await NuvioAPI.shared.profiles()
+        let list = profiles.map { "\($0.index): \($0.name)" }.joined(separator: ", ")
+        await MainActor.run { nuvioStatus = "● Conectado. Perfiles: \(list.isEmpty ? "ninguno" : list)"; nuvioBusy = false }
+      } catch {
+        await MainActor.run {
+          nuvioStatus = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+          nuvioBusy = false
+        }
+      }
+    }
   }
 
   private func connect() {

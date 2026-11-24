@@ -25,6 +25,7 @@
 		49542986216C34950058F680 /* OpenInIINA.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 49542973216C34950058F680 /* OpenInIINA.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		496B19921E2968530035AF10 /* PIP.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 496B19911E2968530035AF10 /* PIP.framework */; };
 		4CB812F7625483744246DE2B /* LibraryWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EE9B3FED0B47F2F4BD64971 /* LibraryWindowController.swift */; };
+		50045DD2CA3F5BDCF37E4105 /* LibrarySeries.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BDDA91AC83D6392EF35B082 /* LibrarySeries.swift */; };
 		51096C0B2CD88BEC00702C31 /* MPVOptionDefaults.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51096C0A2CD88BEC00702C31 /* MPVOptionDefaults.swift */; };
 		5111B18B2C8BCEAC00DEC0AC /* TouchBarSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5111B18A2C8BCEAC00DEC0AC /* TouchBarSettings.swift */; };
 		5114FA942DC704CE00D02435 /* NowPlayingInfoManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5114FA932DC704CE00D02435 /* NowPlayingInfoManager.swift */; };
@@ -362,6 +363,8 @@
 		E3FC31461FE1501E00B9B86F /* PowerSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3FC31451FE1501E00B9B86F /* PowerSource.swift */; };
 		E3FEC1332A30400F00CFD845 /* PluginInputManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3FEC1322A30400F00CFD845 /* PluginInputManager.swift */; };
 		E3FF5AC02938582F0019CE45 /* JavascriptDevTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3FF5ABF2938582F0019CE45 /* JavascriptDevTool.swift */; };
+		FA352E4639C54DB39EDC8910 /* NuvioSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23E923A10211A97775219752 /* NuvioSync.swift */; };
+		FDBE188620DB53440A4CA8B2 /* PlaybackAssist.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EE60307C3E4A7ED400559B5 /* PlaybackAssist.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -536,6 +539,7 @@
 		134C1370205FB181002C7BE4 /* ja */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ja; path = ja.lproj/PrefOSCToolbarSettingsSheetController.strings; sourceTree = "<group>"; };
 		13B82A33218D4A3B00F515A1 /* ja */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ja; path = ja.lproj/MiniPlayerWindowController.strings; sourceTree = "<group>"; };
 		13D77DE01F85A2980076990A /* ja */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ja; path = ja.lproj/FilterPresets.strings; sourceTree = "<group>"; };
+		23E923A10211A97775219752 /* NuvioSync.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NuvioSync.swift; sourceTree = "<group>"; };
 		2FE1FC961F98D3D8004C4D6B /* sk */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = sk; path = sk.lproj/MainMenu.strings; sourceTree = "<group>"; };
 		2FE1FC971F98D3D8004C4D6B /* sk */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = sk; path = sk.lproj/MainWindowController.strings; sourceTree = "<group>"; };
 		2FE1FC9B1F98D3D9004C4D6B /* sk */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = sk; path = sk.lproj/FilterWindowController.strings; sourceTree = "<group>"; };
@@ -817,6 +821,7 @@
 		64D04D5120083B6F0031EE2F /* es */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = es; path = es.lproj/FilterPresets.strings; sourceTree = "<group>"; };
 		64F85F5D211003A900F8D8C0 /* es */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = es; path = es.lproj/PrefOSCToolbarSettingsSheetController.strings; sourceTree = "<group>"; };
 		67C6C21C2148063900AFDE5C /* ja */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ja; path = ja.lproj/OpenURLWindowController.strings; sourceTree = "<group>"; };
+		6BDDA91AC83D6392EF35B082 /* LibrarySeries.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LibrarySeries.swift; sourceTree = "<group>"; };
 		6CA50A931EBBA9DF0060D07A /* de */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = de; path = de.lproj/Localizable.strings; sourceTree = "<group>"; };
 		6CA50A9B1EBBBA830060D07A /* de */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = de; path = de.lproj/MainMenu.strings; sourceTree = "<group>"; };
 		6CA50A9D1EBBC1300060D07A /* de */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = de; path = de.lproj/MainWindowController.strings; sourceTree = "<group>"; };
@@ -831,6 +836,7 @@
 		6DC77D431F1439A700E96176 /* uk */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = uk; path = uk.lproj/InfoPlist.strings; sourceTree = "<group>"; };
 		6DC77D441F1439A800E96176 /* uk */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = uk; path = uk.lproj/Localizable.strings; sourceTree = "<group>"; };
 		6DC77D461F1439A800E96176 /* uk */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = uk; path = uk.lproj/KeyBinding.strings; sourceTree = "<group>"; };
+		6EE60307C3E4A7ED400559B5 /* PlaybackAssist.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PlaybackAssist.swift; sourceTree = "<group>"; };
 		8400D5C21E17C6D2006785F5 /* AboutWindowController.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = AboutWindowController.swift; sourceTree = "<group>"; };
 		8400D5C71E1AB2F1006785F5 /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.xib; name = Base; path = Base.lproj/MainWindowController.xib; sourceTree = "<group>"; };
 		8400D5D61E1AB317006785F5 /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.xib; name = Base; path = Base.lproj/FilterWindowController.xib; sourceTree = "<group>"; };
@@ -1751,6 +1757,9 @@
 				5249937C6B08E3C3B9F37A7C /* TraktScrobbler.swift */,
 				C7FA8F266CCC6F41CC199346 /* LibraryMetadata.swift */,
 				F317720D722B59D5D38F1C35 /* LibraryLists.swift */,
+				6BDDA91AC83D6392EF35B082 /* LibrarySeries.swift */,
+				6EE60307C3E4A7ED400559B5 /* PlaybackAssist.swift */,
+				23E923A10211A97775219752 /* NuvioSync.swift */,
 			);
 			indentWidth = 2;
 			path = iina;
@@ -2450,6 +2459,9 @@
 				1DFC7FCA352C98F53F42EB4C /* TraktScrobbler.swift in Sources */,
 				A05F2A17173D10828FAD095F /* LibraryMetadata.swift in Sources */,
 				15DE18C75CF0CA1C29D5F9C5 /* LibraryLists.swift in Sources */,
+				50045DD2CA3F5BDCF37E4105 /* LibrarySeries.swift in Sources */,
+				FDBE188620DB53440A4CA8B2 /* PlaybackAssist.swift in Sources */,
+				FA352E4639C54DB39EDC8910 /* NuvioSync.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

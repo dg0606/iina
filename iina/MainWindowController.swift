@@ -92,6 +92,8 @@ class MainWindowController: PlayerWindowController {
   var osdView: OSDView!
   var additionalInfoView: AdditionalInfoView!
   var bufferIndicatorView: BufferIndicatorView!
+  /// "Saltar intro" button and "Siguiente episodio" strip.
+  var assistOverlay: AssistOverlayView!
   var timePreviewView: TimePreviewView!
   var titlebarOnTopButton: NSButton!
   var thumbnailPeekView: ThumbnailPeekView!
@@ -503,6 +505,14 @@ class MainWindowController: PlayerWindowController {
     cv.addSubview(additionalInfoView)
     bufferIndicatorView = BufferIndicatorView(mainWindow: self)
     cv.addSubview(bufferIndicatorView)
+    assistOverlay = AssistOverlayView(assist: player.assist)
+    cv.addSubview(assistOverlay)
+    NSLayoutConstraint.activate([
+      assistOverlay.leadingAnchor.constraint(equalTo: cv.leadingAnchor),
+      assistOverlay.trailingAnchor.constraint(equalTo: cv.trailingAnchor),
+      assistOverlay.topAnchor.constraint(equalTo: cv.topAnchor),
+      assistOverlay.bottomAnchor.constraint(equalTo: cv.bottomAnchor),
+    ])
     titleBarView = Titlebar(mainWindow: self)
     cv.addSubview(titleBarView)
     sidebars.installSubviews(in: cv)

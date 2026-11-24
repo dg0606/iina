@@ -217,6 +217,9 @@ class PlayerCore: NSObject {
 
   var mpv: MPVController!
 
+  /// "Saltar intro" and "Siguiente episodio" for episodes played from the WebDAV library.
+  lazy var assist = PlaybackAssist(player: self)
+
   var receivedEndFileWhileLoading: Bool = false
 
   var plugins: [JavascriptPluginInstance] = []
@@ -2002,6 +2005,7 @@ class PlayerCore: NSObject {
 
   func savePlaybackPosition() {
     TraktScrobbler.shared.playbackEnding(self)
+    NuvioSync.shared.playbackEnding(self)
     guard mpv.getFlag(MPVOption.WatchLater.savePositionOnQuit) else { return }
 
     // The player must be active to be able to save the watch later configuration.
@@ -2176,6 +2180,8 @@ class PlayerCore: NSObject {
 
     info.state = .loaded
     TraktScrobbler.shared.fileLoaded(self)
+    NuvioSync.shared.fileLoaded(self)
+    assist.fileLoaded()
 
     // Must force drawing to cover the case where this player was previously used to play a video
     // and is now playing an audio file without an album cover and without using music mode.
@@ -2412,6 +2418,7 @@ class PlayerCore: NSObject {
       syncUI(.time)
       info.state = paused ? .paused : .playing
       TraktScrobbler.shared.pauseChanged(self, paused: paused)
+      NuvioSync.shared.pauseChanged(self, paused: paused)
       refreshSyncUITimer()
       // Follow energy efficiency best practices and ensure IINA is absolutely idle when the video
       // is paused to avoid wasting energy with needless processing. If paused shutdown the timer
@@ -2886,6 +2893,7 @@ class PlayerCore: NSObject {
       }
       DispatchQueue.main.async { [self] in
         currentController.updatePlayTime(withDuration: isNetworkStream, andProgressBar: true)
+        self.assist.tick()
         if !self.isInMiniPlayer && mainWindow.fsState.isFullscreen && mainWindow.displayTimeAndBatteryInFullScreen && !mainWindow.additionalInfoView.isHidden {
           self.mainWindow.additionalInfoView.update()
         }

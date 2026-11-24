@@ -6,6 +6,7 @@
 //  progress saved in Trakt. Progress in Trakt is a percentage, not seconds.
 //
 
+import CryptoKit
 import Foundation
 
 // MARK: - Configuration
@@ -85,6 +86,43 @@ enum TraktMedia: Equatable {
   /// Folder names that only describe a season, not the show (e.g. "Season 1", "Temporada 02").
   private static let seasonFolder = try! NSRegularExpression(
     pattern: #"^(?:season|temporada|specials?|especiales|s\d{1,2})[\s\.\-_]*\d*$"#, options: [.caseInsensitive])
+
+  private static let seasonToken = try! NSRegularExpression(
+    pattern: #"(?:^|[\s\.\-_\(\[])(?:s|season|temporada)[\s\.\-_]?(\d{1,2})(?=$|[\s\.\-_\)\]])"#,
+    options: [.caseInsensitive])
+
+  /// Text before the season marker ("Dexter S01 (2006)" -> "dexter"), or nil when the name has no season marker.
+  /// Two folders with the same base belong to the same show.
+  static func seasonFolderBase(_ name: String) -> String? {
+    let range = NSRange(name.startIndex..., in: name)
+    guard let m = seasonToken.firstMatch(in: name, range: range), let whole = Range(m.range, in: name) else { return nil }
+    return normalize(String(name[..<whole.lowerBound]))
+  }
+
+  /// Episode title written in a file name: "The.Office.US.S04E15.Night.Out.1080p.WEB-DL.mkv" -> "Night Out".
+  static func episodeTitle(fromFileName fileName: String) -> String? {
+    var base = (fileName as NSString).deletingPathExtension
+    base = base.removingPercentEncoding ?? base
+    let range = NSRange(base.startIndex..., in: base)
+    for regex in [episodeRegex, altEpisodeRegex] {
+      guard let m = regex.firstMatch(in: base, range: range), let whole = Range(m.range, in: base) else { continue }
+      var tail = String(base[whole.upperBound...])
+      let tailRange = NSRange(tail.startIndex..., in: tail)
+      if let j = junk.firstMatch(in: tail, range: tailRange), let jr = Range(j.range, in: tail) {
+        tail = String(tail[..<jr.lowerBound])
+      }
+      let title = clean(tail)
+      return title.isEmpty ? nil : title
+    }
+    return nil
+  }
+
+  /// Season number written in a folder name ("Dexter S02 (2007)" -> 2, "Temporada 3" -> 3).
+  static func seasonNumber(inFolder name: String) -> Int? {
+    let range = NSRange(name.startIndex..., in: name)
+    guard let m = seasonToken.firstMatch(in: name, range: range), let r = Range(m.range(at: 1), in: name) else { return nil }
+    return Int(name[r])
+  }
 
   /// Show name taken from the nearest ancestor folder that isn't a season folder.
   private static func showName(fromFolders folders: [String]) -> String? {
@@ -193,10 +231,10 @@ final class TraktAPI {
   private func refreshIfNeeded() async throws {
     guard let token = TraktConfig.token else { throw TraktError.notConnected }
     guard token.expiresAt.timeIntervalSinceNow < 3600 else { return }
-    let (data, status) = try await request("oauth/token", method: "POST", body: [
-      "refresh_token": token.refresh, "client_id": TraktConfig.clientId,
-      "client_secret": TraktConfig.clientSecret,
-      "redirect_uri": "urn:ietf:wg:oauth:2.0:oob", "grant_type": "refresh_token"], auth: false)
+    var body: [String: Any] = ["refresh_token": token.refresh, "client_id": TraktConfig.clientId,
+                                "redirect_uri": "urn:ietf:wg:oauth:2.0:oob", "grant_type": "refresh_token"]
+    if !TraktConfig.clientSecret.isEmpty { body["client_secret"] = TraktConfig.clientSecret }
+    let (data, status) = try await request("oauth/token", method: "POST", body: body, auth: false)
     guard status == 200 else { throw TraktError.http(status) }
     TraktConfig.token = try Self.decodeToken(data)
   }
@@ -213,17 +251,41 @@ final class TraktAPI {
 
   // Device authorization
 
-  struct DeviceCode { let userCode: String; let url: String; let deviceCode: String; let interval: Int; let expiresIn: Int }
+  struct DeviceCode {
+    let userCode: String; let url: String; let deviceCode: String; let interval: Int; let expiresIn: Int
+    /// PKCE verifier, used instead of the client secret for apps that don't have one.
+    let verifier: String?
+  }
+
+  private static func makeVerifier() -> String {
+    let chars = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+    return String((0..<64).map { _ in chars[Int.random(in: 0..<chars.count)] })
+  }
+
+  private static func challenge(for verifier: String) -> String {
+    Data(SHA256.hash(data: Data(verifier.utf8))).base64EncodedString()
+      .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+      .replacingOccurrences(of: "=", with: "")
+  }
 
   func requestDeviceCode() async throws -> DeviceCode {
-    let (data, status) = try await request("oauth/device/code", method: "POST",
-                                           body: ["client_id": TraktConfig.clientId], auth: false)
+    var body: [String: Any] = ["client_id": TraktConfig.clientId]
+    var verifier: String?
+    if TraktConfig.clientSecret.isEmpty {      // app without a secret: use PKCE
+      let v = Self.makeVerifier()
+      verifier = v
+      body["code_challenge"] = Self.challenge(for: v)
+      body["code_challenge_method"] = "S256"
+    }
+    let (data, status) = try await request("oauth/device/code", method: "POST", body: body, auth: false)
     guard status == 200, let j = try JSONSerialization.jsonObject(with: data) as? [String: Any],
           let user = j["user_code"] as? String, let device = j["device_code"] as? String else {
-      throw TraktError.message("No se pudo pedir el código (revisa el Client ID). HTTP \(status)")
+      let detail = String(data: data.prefix(200), encoding: .utf8) ?? ""
+      throw TraktError.message("No se pudo pedir el código (revisa el Client ID). HTTP \(status) \(detail)")
     }
     return DeviceCode(userCode: user, url: (j["verification_url"] as? String) ?? "https://trakt.tv/activate",
-                      deviceCode: device, interval: (j["interval"] as? Int) ?? 5, expiresIn: (j["expires_in"] as? Int) ?? 600)
+                      deviceCode: device, interval: (j["interval"] as? Int) ?? 5, expiresIn: (j["expires_in"] as? Int) ?? 600,
+                      verifier: verifier)
   }
 
   /// Polls until the user approves the code (or it expires).
@@ -232,8 +294,9 @@ final class TraktAPI {
     var interval = code.interval
     while Date() < deadline {
       try await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000_000)
-      let (data, status) = try await request("oauth/device/token", method: "POST", body: [
-        "code": code.deviceCode, "client_id": TraktConfig.clientId, "client_secret": TraktConfig.clientSecret], auth: false)
+      var body: [String: Any] = ["code": code.deviceCode, "client_id": TraktConfig.clientId]
+      if let verifier = code.verifier { body["code_verifier"] = verifier } else { body["client_secret"] = TraktConfig.clientSecret }
+      let (data, status) = try await request("oauth/device/token", method: "POST", body: body, auth: false)
       switch status {
       case 200:
         TraktConfig.token = try Self.decodeToken(data)
@@ -331,7 +394,7 @@ final class TraktScrobbler {
     skipResumeOnce = false
     Task {
       // Only jump when IINA itself isn't already resuming (position near the start).
-      if startPos < 5, !skipResume, let saved = await TraktAPI.shared.savedProgress(for: parsed), saved > 1, saved < 95 {
+      if startPos < 5, !skipResume, !NuvioSync.shared.isActive, let saved = await TraktAPI.shared.savedProgress(for: parsed), saved > 1, saved < 95 {
         await MainActor.run { player.seek(percent: saved) }
         self.lastProgress = saved
       }
@@ -345,6 +408,9 @@ final class TraktScrobbler {
       }
     }
   }
+
+  /// The file played to its end: make sure the closing `stop` reports 100%.
+  func finished() { lastProgress = 100 }
 
   func pauseChanged(_ player: PlayerCore, paused: Bool) {
     guard enabled, let media else { return }

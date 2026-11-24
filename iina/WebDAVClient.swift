@@ -56,6 +56,12 @@ enum WebDAVConfig {
 
   static var isConfigured: Bool { URL(string: url)?.host != nil }
 
+  /// Makes mpv send the WebDAV credentials as a header when it opens files from the server.
+  static func applyAuth(to player: PlayerCore) {
+    guard let auth = basicAuthHeader else { return }
+    player.mpv.setString(MPVOption.Network.httpHeaderFields, "Authorization: \(auth)")
+  }
+
   /// `Authorization: Basic ...` header value, or nil when no user is configured.
   static var basicAuthHeader: String? {
     guard !user.isEmpty, let data = "\(user):\(password)".data(using: .utf8) else { return nil }

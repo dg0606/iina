@@ -32,6 +32,8 @@ class KeychainAccess {
     static let httpAuth = ServiceName(rawValue: "IINA Saved HTTP Password")
     static let webdav = ServiceName(rawValue: "IINA WebDAV Library")
     static let traktSecret = ServiceName(rawValue: "IINA Trakt Client Secret")
+    static let nuvioPassword = ServiceName(rawValue: "IINA Nuvio Password")
+    static let nuvioToken = ServiceName(rawValue: "IINA Nuvio Token")
     static let tmdbKey = ServiceName(rawValue: "IINA TMDB API Key")
     static let traktToken = ServiceName(rawValue: "IINA Trakt Token")
   }

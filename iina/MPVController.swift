@@ -158,6 +158,7 @@ class MPVController: NSObject {
     MPVProperty.videoParamsPrimaries: MPV_FORMAT_STRING,
     MPVProperty.videoParamsGamma: MPV_FORMAT_STRING,
     MPVProperty.idleActive: MPV_FORMAT_FLAG,
+    MPVProperty.eofReached: MPV_FORMAT_FLAG,
     MPVProperty.currentAo: MPV_FORMAT_STRING
   ]
 
@@ -1202,7 +1203,11 @@ class MPVController: NSObject {
         // condition, playback must be paused as soon as possible, so logging is done afterward.
         log("Pausing playback because \"pause when media is opened\" is enabled")
       }
-      DispatchQueue.main.async { self.player.fileEnded(dueToStopCommand) }
+      let reachedEOF = reason == MPV_END_FILE_REASON_EOF
+      DispatchQueue.main.async {
+        self.player.fileEnded(dueToStopCommand)
+        if reachedEOF { self.player.assist.reachedEnd() }
+      }
 
     case MPV_EVENT_COMMAND_REPLY:
       let reply = event.pointee.reply_userdata
@@ -1521,6 +1526,11 @@ class MPVController: NSObject {
 
     case MPVProperty.mediaTitle:
       DispatchQueue.main.async { self.player.mediaTitleChanged() }
+
+    case MPVProperty.eofReached:
+      // With "keep-open" mpv doesn't send end-file at the end: it pauses on the last frame and sets this flag.
+      guard UnsafePointer<Bool>(OpaquePointer(property.data))?.pointee == true else { break }
+      DispatchQueue.main.async { self.player.assist.reachedEnd() }
 
     case MPVProperty.idleActive:
       guard let idleActive = UnsafePointer<Bool>(OpaquePointer(property.data))?.pointee else {
