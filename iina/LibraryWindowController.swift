@@ -25,6 +25,7 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                               backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
+    window.title = "Biblioteca WebDAV"
     window.titlebarAppearsTransparent = true
     window.titleVisibility = .hidden
     window.isMovableByWindowBackground = true
@@ -270,6 +271,9 @@ struct LibraryView: View {
   @State private var selected: WebDAVEntry?
   @State private var seriesEntry: WebDAVEntry?
   @State private var showSettings = false
+  @State private var settingsTab: WebDAVSettingsView.Tab = .server
+  @State private var listToDelete: LibraryList?
+  @FocusState private var searchFocused: Bool
   @State private var newListName = ""
   @State private var showNewList = false
   @State private var renaming: LibraryList?
@@ -288,16 +292,22 @@ struct LibraryView: View {
       VStack(spacing: 0) {
         header
         if !model.hasTMDB && model.errorMessage == nil {
-          Text("Añade tu API key de TMDB en Ajustes para ver carátulas, sinopsis y rating.")
-            .font(.caption).foregroundColor(.orange).padding(.horizontal, 24).padding(.bottom, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
+          HStack(spacing: 8) {
+            Image(systemName: "photo.on.rectangle.angled").foregroundColor(.orange)
+            Text("Añade tu clave de TMDB para ver carátulas, sinopsis y rating.").font(.caption)
+            Button("Configurar") { settingsTab = .metadata; showSettings = true }
+              .buttonStyle(.link).font(.caption)
+            Spacer()
+          }
+          .padding(.horizontal, 24).padding(.bottom, 8)
         }
         content
       }
     }
     .background(LibraryBackground().ignoresSafeArea())
     .frame(minWidth: 760, minHeight: 460)
-    .sheet(isPresented: $showSettings, onDismiss: { model.start() }) { WebDAVSettingsView() }
+    .overlay(shortcutButtons)
+    .sheet(isPresented: $showSettings, onDismiss: { model.start() }) { WebDAVSettingsView(initialTab: settingsTab) }
     .sheet(item: $selected) { entry in
       LibraryDetailView(entry: entry, meta: model.metadata[entry.id], progress: model.progress[entry.id],
                         onPlay: { fromStart in selected = nil; onPlay(entry, fromStart) },
@@ -322,6 +332,17 @@ struct LibraryView: View {
       lists.rename(list.id, to: renameText)
       renaming = nil
     } onCancel: { renaming = nil } }
+    .confirmationDialog("¿Eliminar la lista «\(listToDelete?.name ?? "")»?",
+                        isPresented: Binding(get: { listToDelete != nil }, set: { if !$0 { listToDelete = nil } }),
+                        titleVisibility: .visible, presenting: listToDelete) { list in
+      Button("Eliminar lista", role: .destructive) {
+        if model.tab == .list(list.id) { model.tab = .home }
+        lists.delete(list.id)
+      }
+      Button("Cancelar", role: .cancel) {}
+    } message: { _ in
+      Text("Las películas y series no se borran, solo la lista.")
+    }
     .onReceive(NotificationCenter.default.publisher(for: .webdavLibraryDidShow)) { _ in
       Task { await model.refreshProgress() }
     }
@@ -345,10 +366,7 @@ struct LibraryView: View {
             Label(list.name, systemImage: "star").tag(LibraryTab.list(list.id))
               .contextMenu {
                 Button("Renombrar…") { renameText = list.name; renaming = list }
-                Button("Eliminar lista", role: .destructive) {
-                  if model.tab == .list(list.id) { model.tab = .home }
-                  lists.delete(list.id)
-                }
+                Button("Eliminar lista…", role: .destructive) { listToDelete = list }
               }
           }
         }
@@ -358,7 +376,7 @@ struct LibraryView: View {
       HStack {
         Button { showNewList = true } label: { Label("Nueva lista", systemImage: "plus") }
         Spacer()
-        Button { showSettings = true } label: { Image(systemName: "gearshape") }.help("Ajustes")
+        Button { showSettings = true } label: { Image(systemName: "gearshape") }.help("Ajustes").accessibilityLabel("Ajustes")
       }
       .buttonStyle(.borderless)
       .padding(.horizontal, 14).padding(.vertical, 10)
@@ -376,25 +394,58 @@ struct LibraryView: View {
     }
   }
 
+  /// Path of the folder being shown, under the title (the title alone only names the last folder).
+  private var folderPath: String? {
+    guard model.tab == .library, let path = model.current?.path else { return nil }
+    let decoded = path.removingPercentEncoding ?? path
+    return decoded == "/" ? nil : decoded
+  }
+
   private var header: some View {
     HStack(spacing: 12) {
       if model.tab == .library && model.canGoUp {
-        Button { model.goUp() } label: { Image(systemName: "chevron.left") }.help("Subir")
+        Button { model.goUp() } label: { Image(systemName: "chevron.left") }
+          .help("Subir un nivel (⌘[)").accessibilityLabel("Subir un nivel")
+          .keyboardShortcut("[", modifiers: .command)
       }
-      Text(title).font(.system(size: 26, weight: .bold)).lineLimit(1)
+      VStack(alignment: .leading, spacing: 1) {
+        Text(title).font(.system(size: 26, weight: .bold)).lineLimit(1)
+        if let folderPath {
+          Text(folderPath).font(.caption).foregroundColor(.secondary).lineLimit(1).truncationMode(.head)
+        }
+      }
       Spacer()
       HStack(spacing: 6) {
         Image(systemName: "magnifyingglass").foregroundColor(.secondary)
-        TextField("Buscar", text: $model.filter).textFieldStyle(.plain)
+        TextField("Buscar", text: $model.filter)
+          .textFieldStyle(.plain)
+          .focused($searchFocused)
+          .onExitCommand { model.filter = ""; searchFocused = false }     // Esc clears the search
+        if !model.filter.isEmpty {
+          Button { model.filter = "" } label: { Image(systemName: "xmark.circle.fill") }
+            .buttonStyle(.plain).foregroundColor(.secondary).accessibilityLabel("Borrar búsqueda")
+        }
       }
       .padding(.horizontal, 10).padding(.vertical, 6)
       .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.08)))
       .frame(width: 240)
-      Button { model.reload() } label: { Image(systemName: "arrow.clockwise") }.help("Actualizar")
+      Button { model.reload() } label: { Image(systemName: "arrow.clockwise") }
+        .help("Actualizar (⌘R)").accessibilityLabel("Actualizar")
+        .keyboardShortcut("r", modifiers: .command)
     }
     .buttonStyle(.borderless)
     .font(.system(size: 14))
     .padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 12)
+  }
+
+  /// Keyboard shortcuts without a visible button. ⌘1 is taken by IINA's "Normal Size", so sections use ⌥⌘1/⌥⌘2.
+  private var shortcutButtons: some View {
+    ZStack {
+      Button("Buscar") { searchFocused = true }.keyboardShortcut("f", modifiers: .command)
+      Button("Inicio") { model.tab = .home }.keyboardShortcut("1", modifiers: [.command, .option])
+      Button("Biblioteca") { model.tab = .library }.keyboardShortcut("2", modifiers: [.command, .option])
+    }
+    .opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
   }
 
   private func nameSheet(title: String, text: Binding<String>, onOK: @escaping () -> Void,
@@ -404,8 +455,9 @@ struct LibraryView: View {
       TextField("Nombre", text: text).textFieldStyle(.roundedBorder).onSubmit(onOK)
       HStack {
         Spacer()
-        Button("Cancelar", action: onCancel)
+        Button("Cancelar", action: onCancel).keyboardShortcut(.cancelAction)
         Button("Aceptar", action: onOK).keyboardShortcut(.defaultAction)
+          .disabled(text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
       }
     }.padding(20).frame(width: 340)
   }
@@ -425,7 +477,8 @@ struct LibraryView: View {
     LazyVGrid(columns: columns, spacing: 28) {
       ForEach(items) { entry in
         LibraryCard(entry: entry, meta: model.metadata[entry.id], progress: model.progress[entry.id],
-                    badge: model.nextUp.contains(entry.id) ? "Siguiente episodio" : nil)
+                    badge: model.nextUp.contains(entry.id) ? "Siguiente episodio" : nil,
+                    menuContent: listMenu(for: entry))
           .onTapGesture { tapped(entry) }
           .contextMenu { listMenu(for: entry) }
           .task { await model.enrich(entry) }
@@ -484,16 +537,36 @@ struct LibraryView: View {
     }
   }
 
+  /// Centered message with an icon and optional actions, the way Apple's apps present empty and error states.
+  private func stateView<Actions: View>(icon: String, tint: Color = .secondary, _ message: String,
+                                        @ViewBuilder actions: () -> Actions) -> some View {
+    VStack(spacing: 12) {
+      Image(systemName: icon).font(.system(size: 34)).foregroundColor(tint)
+      Text(message).multilineTextAlignment(.center).foregroundColor(.secondary).frame(maxWidth: 420)
+      HStack { actions() }.padding(.top, 4)
+    }
+    .padding(40).frame(maxWidth: .infinity).padding(.top, 40)
+  }
+
   @ViewBuilder
   private var libraryContent: some View {
     if let message = model.errorMessage {
-      Text(message).foregroundColor(.red).padding(24).frame(maxWidth: .infinity, alignment: .leading)
+      stateView(icon: "exclamationmark.triangle", tint: .orange, message) {
+        Button("Reintentar") { model.reload() }
+        Button("Abrir ajustes") { settingsTab = .server; showSettings = true }
+      }
       Spacer()
     } else if model.loading {
-      ProgressView().padding(24)
+      ProgressView("Cargando…").padding(40).frame(maxWidth: .infinity)
       Spacer()
     } else if model.visibleLibrary.isEmpty {
-      Text(model.entries.isEmpty ? "Carpeta vacía" : "Sin resultados").foregroundColor(.secondary).padding(24)
+      if model.entries.isEmpty {
+        stateView(icon: "folder", "Esta carpeta no tiene películas ni series.") { EmptyView() }
+      } else {
+        stateView(icon: "magnifyingglass", "Sin resultados para «\(model.filter)».") {
+          Button("Borrar búsqueda") { model.filter = "" }
+        }
+      }
       Spacer()
     } else {
       ScrollView { grid(model.visibleLibrary).padding(24) }
@@ -539,13 +612,16 @@ struct PosterView: View {
   }
 }
 
-struct LibraryCard: View {
+struct LibraryCard<MenuContent: View>: View {
   let entry: WebDAVEntry
   let meta: MediaMetadata?
   let progress: ProgressInfo?
   var badge: String? = nil
+  /// Actions shown in the "…" button (the same as the context menu), so they don't depend on knowing about right-click.
+  let menuContent: MenuContent
 
   @State private var hovering = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
@@ -554,6 +630,17 @@ struct LibraryCard: View {
           if let progress, progress.percent > 0 {
             ProgressView(value: min(progress.percent, 100), total: 100)
               .progressViewStyle(.linear).padding(6)
+          }
+        }
+        .overlay(alignment: .topTrailing) {
+          if hovering {
+            Menu { menuContent } label: {
+              Image(systemName: "ellipsis.circle.fill")
+                .font(.system(size: 22)).foregroundColor(.white)
+                .shadow(color: .black.opacity(0.6), radius: 3)
+            }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            .padding(6).help("Más opciones").accessibilityLabel("Más opciones")
           }
         }
       Text(displayTitle).font(.system(size: 12, weight: .semibold)).lineLimit(2)
@@ -568,9 +655,11 @@ struct LibraryCard: View {
       }
     }
     .contentShape(Rectangle())
-    .scaleEffect(hovering ? 1.03 : 1)
-    .animation(.easeOut(duration: 0.15), value: hovering)
+    .scaleEffect(hovering && !reduceMotion ? 1.03 : 1)
+    .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: hovering)
     .onHover { hovering = $0 }
+    .accessibilityElement(children: .combine)
+    .accessibilityAddTraits(.isButton)
   }
 
   private var displayTitle: String {
@@ -677,6 +766,11 @@ struct LibraryBackground: View {
 // MARK: - Settings
 
 struct WebDAVSettingsView: View {
+  enum Tab: String, CaseIterable, Identifiable {
+    case server, playback, metadata, accounts
+    var id: String { rawValue }
+  }
+
   @Environment(\.presentationMode) private var presentation
   @State private var url = WebDAVConfig.url
   @State private var user = WebDAVConfig.user
@@ -702,78 +796,148 @@ struct WebDAVSettingsView: View {
   @State private var traktStatus = ""
   @State private var connecting = false
 
-  var body: some View {
+  @State private var tab: Tab
+
+  init(initialTab: Tab = .server) { _tab = State(initialValue: initialTab) }
+
+  /// An empty address is allowed (nothing configured yet); anything else must be a usable http(s) URL.
+  private var urlValid: Bool {
+    let text = url.trimmingCharacters(in: .whitespacesAndNewlines)
+    if text.isEmpty { return true }
+    guard let u = URL(string: text), let scheme = u.scheme?.lowercased(), ["http", "https"].contains(scheme),
+          u.host != nil else { return false }
+    return true
+  }
+
+  private func hint(_ text: String) -> some View {
+    Text(text).font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+  }
+
+  private func page<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
     ScrollView {
-    VStack(alignment: .leading, spacing: 10) {
-      Text("Servidor WebDAV").font(.headline)
-      TextField("https://servidor.com/dav/peliculas/", text: $url).textFieldStyle(.roundedBorder)
-      TextField("Usuario", text: $user).textFieldStyle(.roundedBorder)
-      SecureField("Contraseña", text: $password).textFieldStyle(.roundedBorder)
-      Toggle("Abrir la biblioteca al iniciar", isOn: $openOnLaunch)
+      VStack(alignment: .leading, spacing: 12) { content() }
+        .frame(maxWidth: .infinity, alignment: .leading).padding(20)
+    }
+  }
 
-      Divider().padding(.vertical, 4)
-      Text("Reproducción").font(.headline)
-      Toggle("Mostrar «Siguiente episodio» al final", isOn: $assistNext)
-      Toggle("Reproducir el siguiente episodio automáticamente", isOn: $assistAutoplay).disabled(!assistNext)
-      Toggle("Mostrar «Saltar intro»", isOn: $assistSkip)
-      Stepper("Si el archivo no tiene capítulos, saltar \(assistSeconds) s", value: $assistSeconds, in: 10...240, step: 5)
-        .disabled(!assistSkip)
-
-      Divider().padding(.vertical, 4)
-      Text("TMDB (carátulas, sinopsis y rating)").font(.headline)
-      Text("API key gratuita en themoviedb.org → Ajustes → API. Acepta la clave v3 o el token de lectura v4.")
-        .font(.caption).foregroundColor(.secondary)
-      SecureField("API key de TMDB", text: $tmdbKey).textFieldStyle(.roundedBorder)
-
-      Divider().padding(.vertical, 4)
-      Text("Nuvio (tu progreso aparece en Nuvio web y en el celular)").font(.headline)
-      Text("Usa tu cuenta de Nuvio. La URL y la clave pública son las del backend que usa tu Nuvio.")
-        .font(.caption).foregroundColor(.secondary)
-      TextField("URL del backend (https://…)", text: $nuvioURL).textFieldStyle(.roundedBorder)
-      SecureField("Clave pública (anon key)", text: $nuvioKey).textFieldStyle(.roundedBorder)
-      TextField("Correo de Nuvio", text: $nuvioEmail).textFieldStyle(.roundedBorder)
-      SecureField("Contraseña de Nuvio", text: $nuvioPassword).textFieldStyle(.roundedBorder)
-      Stepper("Perfil de Nuvio: \(nuvioProfile)", value: $nuvioProfile, in: 1...6)
-      Toggle("Enviar progreso a Nuvio", isOn: $nuvioEnabled)
-      HStack {
-        Button(nuvioBusy ? "Probando…" : "Probar conexión") { testNuvio() }
-          .disabled(nuvioBusy || nuvioURL.isEmpty || nuvioKey.isEmpty || nuvioEmail.isEmpty || nuvioPassword.isEmpty)
-        Text(nuvioStatus).font(.caption).foregroundColor(.secondary).lineLimit(3)
+  var body: some View {
+    VStack(spacing: 0) {
+      // A segmented control (like Apple's own settings sheets) instead of TabView, which collapses inside a sheet on macOS.
+      Picker("", selection: $tab) {
+        Text("Servidor").tag(Tab.server)
+        Text("Reproducción").tag(Tab.playback)
+        Text("Carátulas").tag(Tab.metadata)
+        Text("Cuentas").tag(Tab.accounts)
       }
-      if !NuvioConfig.lastStatus.isEmpty {
-        Text("Último envío: \(NuvioConfig.lastStatus)").font(.caption).foregroundColor(.secondary).lineLimit(3)
-      }
-
-      Divider().padding(.vertical, 4)
-      Text("Trakt (progreso sincronizado)").font(.headline)
-      Text("Crea una app en trakt.tv/oauth/applications (redirect: urn:ietf:wg:oauth:2.0:oob). Pega el Client ID; el secret es opcional (las apps nuevas no lo tienen).")
-        .font(.caption).foregroundColor(.secondary)
-      TextField("Client ID", text: $traktClientId).textFieldStyle(.roundedBorder)
-      SecureField("Client Secret (opcional)", text: $traktSecret).textFieldStyle(.roundedBorder)
-      Toggle("Enviar progreso a Trakt", isOn: $traktEnabled)
-      HStack {
-        if traktConnected {
-          Text("● Conectado").foregroundColor(.green)
-          Button("Desconectar") { TraktAPI.shared.disconnect(); traktConnected = false; traktStatus = "" }
-        } else {
-          Button(connecting ? "Esperando aprobación…" : "Conectar Trakt") { connect() }
-            .disabled(connecting || traktClientId.isEmpty)
+      .pickerStyle(.segmented).labelsHidden()
+      .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 4)
+      Group {
+        switch tab {
+        case .server: serverTab
+        case .playback: playbackTab
+        case .metadata: metadataTab
+        case .accounts: accountsTab
         }
-        Text(traktStatus).font(.caption).foregroundColor(.secondary).lineLimit(2)
       }
-
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+      Divider()
       HStack {
         Spacer()
-        Button("Cancelar") { presentation.wrappedValue.dismiss() }
-        Button("Guardar") {
-          save()
-          presentation.wrappedValue.dismiss()
-        }.keyboardShortcut(.defaultAction)
+        Button("Cancelar") { presentation.wrappedValue.dismiss() }.keyboardShortcut(.cancelAction)
+        Button("Guardar") { save(); presentation.wrappedValue.dismiss() }
+          .keyboardShortcut(.defaultAction).disabled(!urlValid)
+      }
+      .padding(14)
+    }
+    .frame(width: 580, height: 520)
+  }
+
+  // MARK: Tabs
+
+  private var serverTab: some View {
+    page {
+      Text("Tu biblioteca").font(.headline)
+      hint("La carpeta de tu servidor WebDAV que contiene tus películas y series.")
+      TextField("https://servidor.com/dav/peliculas/", text: $url).textFieldStyle(.roundedBorder)
+      if !urlValid {
+        Label("La dirección debe empezar con http:// o https://", systemImage: "exclamationmark.triangle.fill")
+          .font(.caption).foregroundColor(.orange)
+      }
+      TextField("Usuario", text: $user).textFieldStyle(.roundedBorder)
+      SecureField("Contraseña", text: $password).textFieldStyle(.roundedBorder)
+      hint("La contraseña se guarda en el Llavero de macOS, no en un archivo.")
+      Divider().padding(.vertical, 2)
+      Toggle("Abrir la biblioteca al iniciar IINA", isOn: $openOnLaunch)
+    }
+  }
+
+  private var playbackTab: some View {
+    page {
+      Text("Al reproducir series").font(.headline)
+      Toggle("Mostrar «Siguiente episodio» cuando empiezan los créditos", isOn: $assistNext)
+      Toggle("Reproducir el siguiente episodio automáticamente", isOn: $assistAutoplay)
+        .disabled(!assistNext).padding(.leading, 18)
+      Divider().padding(.vertical, 2)
+      Toggle("Mostrar el botón «Saltar intro»", isOn: $assistSkip)
+      Stepper("Si el archivo no tiene capítulos, saltar \(assistSeconds) s", value: $assistSeconds, in: 10...240, step: 5)
+        .disabled(!assistSkip).padding(.leading, 18)
+      hint("El botón usa los capítulos «Intro» u «Opening» del archivo cuando existen.")
+    }
+  }
+
+  private var metadataTab: some View {
+    page {
+      Text("Carátulas, sinopsis y rating").font(.headline)
+      hint("La biblioteca consulta TMDB para mostrar las carátulas. Necesitas una clave gratuita; sirve la clave v3 o el token de lectura v4.")
+      SecureField("Clave de TMDB", text: $tmdbKey).textFieldStyle(.roundedBorder)
+      Link("Obtener una clave gratuita en themoviedb.org", destination: URL(string: "https://www.themoviedb.org/settings/api")!)
+        .font(.caption)
+    }
+  }
+
+  private var accountsTab: some View {
+    page {
+      GroupBox(label: Text("Nuvio").font(.headline)) {
+        VStack(alignment: .leading, spacing: 10) {
+          hint("Lo que veas aquí aparece en Nuvio web y en tu celular, con el minuto exacto. Usa la dirección y la clave pública del servicio que usa tu Nuvio.")
+          TextField("Dirección del servicio (https://…)", text: $nuvioURL).textFieldStyle(.roundedBorder)
+          SecureField("Clave pública del servicio", text: $nuvioKey).textFieldStyle(.roundedBorder)
+          TextField("Correo de tu cuenta de Nuvio", text: $nuvioEmail).textFieldStyle(.roundedBorder)
+          SecureField("Contraseña de tu cuenta de Nuvio", text: $nuvioPassword).textFieldStyle(.roundedBorder)
+          Stepper("Perfil de Nuvio: \(nuvioProfile)", value: $nuvioProfile, in: 1...6)
+          Toggle("Enviar el progreso a Nuvio", isOn: $nuvioEnabled)
+          HStack {
+            Button(nuvioBusy ? "Probando…" : "Probar conexión") { testNuvio() }
+              .disabled(nuvioBusy || nuvioURL.isEmpty || nuvioKey.isEmpty || nuvioEmail.isEmpty || nuvioPassword.isEmpty)
+            if nuvioBusy { ProgressView().controlSize(.small) }
+            Text(nuvioStatus).font(.caption).foregroundColor(.secondary).lineLimit(3)
+          }
+          if !NuvioConfig.lastStatus.isEmpty {
+            hint("Último envío: \(NuvioConfig.lastStatus)")
+          }
+        }.padding(8)
+      }
+      GroupBox(label: Text("Trakt").font(.headline)) {
+        VStack(alignment: .leading, spacing: 10) {
+          hint("Opcional. Crea tu propia app en Trakt con la dirección de redirección urn:ietf:wg:oauth:2.0:oob y pega su Client ID; el secret es opcional.")
+          Link("Crear una app en Trakt", destination: URL(string: "https://trakt.tv/oauth/applications/new")!).font(.caption)
+          TextField("Client ID", text: $traktClientId).textFieldStyle(.roundedBorder)
+          SecureField("Client Secret (opcional)", text: $traktSecret).textFieldStyle(.roundedBorder)
+          Toggle("Enviar el progreso a Trakt", isOn: $traktEnabled)
+          HStack {
+            if traktConnected {
+              Label("Conectado", systemImage: "checkmark.circle.fill").foregroundColor(.green)
+              Button("Desconectar") { TraktAPI.shared.disconnect(); traktConnected = false; traktStatus = "" }
+            } else {
+              Button(connecting ? "Esperando aprobación…" : "Conectar Trakt") { connect() }
+                .disabled(connecting || traktClientId.isEmpty)
+              if connecting { ProgressView().controlSize(.small) }
+            }
+            Text(traktStatus).font(.caption).foregroundColor(.secondary).lineLimit(2)
+          }
+        }.padding(8)
       }
     }
-    .padding(20)
-    }
-    .frame(width: 520, height: 680)
   }
 
   private func save() {

@@ -11,6 +11,16 @@ Fork de [IINA](https://github.com/iina/iina) para macOS con una pantalla de inic
 - **Progreso:** se envía a tu cuenta de **Nuvio** (posición exacta, mismo formato que Nuvio web) y, opcionalmente, a **Trakt**.
 - Interfaz con el estilo de IINA: barra de título transparente, material translúcido y el tema de IINA.
 
+## Atajos (en la ventana de la biblioteca)
+
+| Atajo | Acción |
+|---|---|
+| ⌘F | Buscar |
+| ⌘R | Actualizar |
+| ⌘[ | Subir un nivel de carpeta |
+| ⌥⌘1 / ⌥⌘2 | Ir a Inicio / Biblioteca |
+| Esc | Cerrar hojas y borrar la búsqueda |
+
 ## Configuración (engranaje de la barra lateral)
 
 Nada de esto viene incluido en el código; cada quien pone lo suyo:

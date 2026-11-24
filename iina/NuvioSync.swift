@@ -274,6 +274,8 @@ final class NuvioSync {
   private var lastDurationMs: Double = 0
   private var timer: Timer?
   private var token = UUID()
+  private weak var player: PlayerCore?
+  private var failureShown = false
 
   var isActive: Bool { NuvioConfig.enabled && NuvioConfig.isConfigured }
 
@@ -292,6 +294,8 @@ final class NuvioSync {
     guard let media = TraktMedia.parse(fileName: url.lastPathComponent, folders: folders) else { return }
 
     token = UUID()
+    self.player = player
+    failureShown = false
     let myToken = token
     let startPos = player.mpv.getDouble(MPVProperty.timePos)
     let skipResume = TraktScrobbler.shared.skipResumeOnce
@@ -365,6 +369,15 @@ final class NuvioSync {
     identity = nil
   }
 
+  /// Tells the user on screen that progress is not being saved, once per file so it never nags.
+  private func showFailureOnce(_ reason: String) {
+    DispatchQueue.main.async { [weak self] in
+      guard let self, !self.failureShown, let player = self.player else { return }
+      self.failureShown = true
+      player.sendOSD(.customWithDetail("No se pudo guardar el progreso en Nuvio", String(reason.prefix(90))))
+    }
+  }
+
   private func report(ended: Bool) {
     guard let identity, lastDurationMs > 0 || ended else { return }
     let pos = lastPositionMs, dur = lastDurationMs, known = rows
@@ -376,7 +389,9 @@ final class NuvioSync {
         if stored { NuvioConfig.record("OK \(identity.videoId) en \(Int(pos / 1000)) s") }
       } catch {
         Logger.log("Nuvio: push failed: \(error)", level: .error)
-        NuvioConfig.record("ERROR al enviar \(identity.videoId): \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)")
+        let reason = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        NuvioConfig.record("ERROR al enviar \(identity.videoId): \(reason)")
+        showFailureOnce(reason)
       }
     }
   }
