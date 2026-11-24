@@ -4,6 +4,8 @@ Fork de [IINA](https://github.com/iina/iina) para macOS con una pantalla de inic
 
 ## Qué añade
 
+- **Portada destacada** en Inicio (fondo de la serie o película, progreso y botón Continuar) y **filas horizontales** al estilo Apple TV, con la imagen de cada episodio.
+- **Carátulas también para carpetas** de release (se lee el título real del nombre) y **etiquetas de calidad** leídas del nombre del archivo (4K, DV, HDR, Remux, DTS-HD…).
 - **Inicio** al abrir la app: "Continuar viendo" y "Vistos recientemente" (una sola tarjeta por serie), con carátula, rating y "Te quedaste en 52:10".
 - **Biblioteca** de tu servidor WebDAV, con carátulas, sinopsis y rating de TMDB, y **listas** propias (Favoritos y las que crees).
 - **Series:** temporadas y capítulos con título, imagen, duración y estado de visto; el siguiente episodio se agrega solo a "Continuar viendo".

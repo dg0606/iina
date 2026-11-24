@@ -99,6 +99,37 @@ enum TraktMedia: Equatable {
     return normalize(String(name[..<whole.lowerBound]))
   }
 
+  /// Title, year and kind read from a release folder name such as
+  /// "[SITE] 10 Cloverfield Lane 2016 UHD BluRay 2160p HDR10" or "The Office US S01-S09 1080p AMZN WEB-DL".
+  static func folderTitle(_ name: String) -> (title: String, year: Int?, isSeries: Bool)? {
+    var text = name.removingPercentEncoding ?? name
+    // Leading "[tracker]" tags and web addresses are noise.
+    text = text.replacingOccurrences(of: #"^(\s*[\[【][^\]】]*[\]】])+"#, with: "", options: .regularExpression)
+    text = text.replacingOccurrences(of: #"(?i)\bwww\.[a-z0-9.\-]+\.[a-z]{2,}\b"#, with: " ", options: .regularExpression)
+    let range = NSRange(text.startIndex..., in: text)
+    var cut = text.endIndex
+    var isSeries = false
+    if let m = seasonToken.firstMatch(in: text, range: range), let r = Range(m.range, in: text) {
+      isSeries = true
+      cut = r.lowerBound
+    }
+    var year: Int?
+    let years = yearRegex.matches(in: text, range: range).filter {
+      guard let whole = Range($0.range, in: text) else { return false }
+      return !clean(String(text[..<whole.lowerBound])).isEmpty
+    }
+    if let m = years.last, let yr = Range(m.range(at: 1), in: text), let whole = Range(m.range, in: text),
+       whole.lowerBound < cut {
+      year = Int(text[yr])
+      cut = whole.lowerBound
+    }
+    if let m = junk.firstMatch(in: text, range: range), let r = Range(m.range, in: text), r.lowerBound < cut {
+      cut = r.lowerBound
+    }
+    let title = clean(String(text[..<cut]))
+    return title.count >= 2 ? (title, year, isSeries) : nil
+  }
+
   /// Episode title written in a file name: "The.Office.US.S04E15.Night.Out.1080p.WEB-DL.mkv" -> "Night Out".
   static func episodeTitle(fromFileName fileName: String) -> String? {
     var base = (fileName as NSString).deletingPathExtension

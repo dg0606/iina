@@ -23,7 +23,14 @@ struct MediaMetadata: Codable, Hashable {
   var number: Int?
   /// IMDb id ("tt…"); empty string when TMDB has none. nil = not looked up yet.
   var imdbId: String?
+  /// Wide background image ("" = TMDB has none, nil = not looked up yet) and the one-line tagline.
+  var backdropPath: String?
+  var tagline: String?
 
+  var backdropURL: URL? {
+    guard let backdropPath, !backdropPath.isEmpty else { return nil }
+    return URL(string: "https://image.tmdb.org/t/p/w1280\(backdropPath)")
+  }
   var posterURL: URL? { posterPath.flatMap { URL(string: "https://image.tmdb.org/t/p/w342\($0)") } }
   var largePosterURL: URL? { posterPath.flatMap { URL(string: "https://image.tmdb.org/t/p/w500\($0)") } }
 }
@@ -84,6 +91,7 @@ struct EpisodeMeta: Codable, Hashable {
   var rating: Double?
 
   var stillURL: URL? { stillPath.flatMap { URL(string: "https://image.tmdb.org/t/p/w300\($0)") } }
+  var stillLargeURL: URL? { stillPath.flatMap { URL(string: "https://image.tmdb.org/t/p/w780\($0)") } }
 }
 
 private struct MetadataCacheFile: Codable {
@@ -132,7 +140,7 @@ actor MetadataStore {
   func metadata(for media: TraktMedia) async -> MediaMetadata? {
     let key = Self.key(for: media)
     // Entries cached before the IMDb id was stored are looked up again once.
-    if let hit = cache.entries[key], hit.imdbId != nil || !TMDBConfig.isConfigured { return hit }
+    if let hit = cache.entries[key], (hit.imdbId != nil && hit.backdropPath != nil) || !TMDBConfig.isConfigured { return hit }
     if cache.misses.contains(key) || !TMDBConfig.isConfigured { return cache.entries[key] }
     do {
       let result: MediaMetadata?
@@ -177,6 +185,33 @@ actor MetadataStore {
     }
   }
 
+  /// Poster and info for a release folder. Matching is strict (title and year must agree), because folder names are
+  /// noisy and a wrong poster is worse than none.
+  func folderMetadata(title: String, year: Int?, isSeries: Bool) async -> MediaMetadata? {
+    let key = "f:\(isSeries ? "s" : "m"):\(TraktMedia.normalize(title)):\(year ?? 0)"
+    if let hit = cache.entries[key] { return hit }
+    if cache.misses.contains(key) || !TMDBConfig.isConfigured { return nil }
+    do {
+      let result = isSeries ? try await fetchShow(title: title, strict: true)
+                            : try await fetchMovie(title: title, year: year, strict: true)
+      if let result { cache.entries[key] = result } else { cache.misses.insert(key) }
+      save()
+      return result
+    } catch {
+      return nil
+    }
+  }
+
+  /// Whether a TMDB result really is `query`: same title (localized or original) and a release year within one.
+  private static func matches(query: String, titles: [String?], year: Int?, resultYear: Int?) -> Bool {
+    if let year, let resultYear, abs(year - resultYear) > 1 { return false }
+    let q = TraktMedia.normalize(query)
+    guard q.count >= 3 else { return false }
+    return titles.compactMap { $0 }.map(TraktMedia.normalize).contains { t in
+      t == q || (q.count >= 5 && t.count >= 5 && (t.hasPrefix(q) || q.hasPrefix(t)))
+    }
+  }
+
   // MARK: Requests
 
   private func get(_ path: String, _ query: [String: String]) async throws -> [String: Any] {
@@ -204,7 +239,7 @@ actor MetadataStore {
     (json["genres"] as? [[String: Any]])?.compactMap { $0["name"] as? String } ?? []
   }
 
-  private func fetchMovie(title: String, year: Int?) async throws -> MediaMetadata? {
+  private func fetchMovie(title: String, year: Int?, strict: Bool = false) async throws -> MediaMetadata? {
     var q = ["query": title]
     if let year { q["year"] = String(year) }
     var search = try await get("search/movie", q)
@@ -213,26 +248,37 @@ actor MetadataStore {
       search = try await get("search/movie", ["query": title])
       results = search["results"] as? [[String: Any]] ?? []
     }
-    guard let first = results.first, let id = first["id"] as? Int else { return nil }
+    let chosen = strict
+      ? results.first { Self.matches(query: title, titles: [$0["title"] as? String, $0["original_title"] as? String],
+                                      year: year, resultYear: self.year(from: $0["release_date"])) }
+      : results.first
+    guard let first = chosen, let id = first["id"] as? Int else { return nil }
     let d = try await get("movie/\(id)", ["append_to_response": "external_ids"])
     let imdb = (d["imdb_id"] as? String) ?? ((d["external_ids"] as? [String: Any])?["imdb_id"] as? String)
     return MediaMetadata(
       title: (d["title"] as? String) ?? title, year: self.year(from: d["release_date"]),
       overview: (d["overview"] as? String) ?? "", rating: d["vote_average"] as? Double,
       runtimeMinutes: d["runtime"] as? Int, genres: genres(d), posterPath: d["poster_path"] as? String,
-      episodeTitle: nil, season: nil, number: nil, imdbId: imdb ?? "")
+      episodeTitle: nil, season: nil, number: nil, imdbId: imdb ?? "",
+      backdropPath: (d["backdrop_path"] as? String) ?? "", tagline: d["tagline"] as? String)
   }
 
-  private func fetchShow(title: String) async throws -> MediaMetadata? {
+  private func fetchShow(title: String, strict: Bool = false) async throws -> MediaMetadata? {
     let search = try await get("search/tv", ["query": title])
-    guard let first = (search["results"] as? [[String: Any]])?.first, let id = first["id"] as? Int else { return nil }
+    let results = search["results"] as? [[String: Any]] ?? []
+    let chosen = strict
+      ? results.first { Self.matches(query: title, titles: [$0["name"] as? String, $0["original_name"] as? String],
+                                      year: nil, resultYear: nil) }
+      : results.first
+    guard let first = chosen, let id = first["id"] as? Int else { return nil }
     let d = try await get("tv/\(id)", ["append_to_response": "external_ids"])
     let imdb = (d["external_ids"] as? [String: Any])?["imdb_id"] as? String
     return MediaMetadata(
       title: (d["name"] as? String) ?? title, year: year(from: d["first_air_date"]),
       overview: (d["overview"] as? String) ?? "", rating: d["vote_average"] as? Double,
       runtimeMinutes: (d["episode_run_time"] as? [Int])?.first, genres: genres(d),
-      posterPath: d["poster_path"] as? String, episodeTitle: nil, season: nil, number: nil, imdbId: imdb ?? "")
+      posterPath: d["poster_path"] as? String, episodeTitle: nil, season: nil, number: nil, imdbId: imdb ?? "",
+      backdropPath: (d["backdrop_path"] as? String) ?? "", tagline: d["tagline"] as? String)
   }
 
   private func fetchEpisode(show: String, season: Int, number: Int) async throws -> MediaMetadata? {

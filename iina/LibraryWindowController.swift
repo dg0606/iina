@@ -76,6 +76,13 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
 
 // MARK: - View model
 
+enum LibrarySort: String, CaseIterable, Identifiable {
+  case name = "Nombre (A–Z)"
+  case nameDescending = "Nombre (Z–A)"
+  case size = "Tamaño (mayor primero)"
+  var id: String { rawValue }
+}
+
 enum LibraryTab: Hashable {
   case home
   case library
@@ -92,6 +99,9 @@ final class LibraryViewModel: ObservableObject {
   @Published var current: URL?
   @Published var filter = ""
   @Published var hasTMDB = TMDBConfig.isConfigured
+  @Published var sort: LibrarySort = .name
+  /// Wide episode images for the shelves, by entry id.
+  @Published var stills: [String: URL] = [:]
   @Published var tab: LibraryTab = .home
   /// In-progress items, newest first ("Continuar viendo").
   @Published var resumeEntries: [WebDAVEntry] = []
@@ -114,7 +124,18 @@ final class LibraryViewModel: ObservableObject {
     filter.isEmpty || entry.name.localizedCaseInsensitiveContains(filter)
   }
 
-  var visibleLibrary: [WebDAVEntry] { entries.filter(matches) }
+  var visibleLibrary: [WebDAVEntry] {
+    let shown = entries.filter(matches)
+    func order(_ a: WebDAVEntry, _ b: WebDAVEntry) -> Bool {
+      switch sort {
+      case .name: return a.name.localizedStandardCompare(b.name) == .orderedAscending
+      case .nameDescending: return a.name.localizedStandardCompare(b.name) == .orderedDescending
+      case .size: return (a.size ?? 0) > (b.size ?? 0)
+      }
+    }
+    // Folders always come first, like in Finder.
+    return shown.filter(\.isDirectory).sorted(by: order) + shown.filter { !$0.isDirectory }.sorted(by: order)
+  }
 
   func start() {
     hasTMDB = TMDBConfig.isConfigured
@@ -235,7 +256,14 @@ final class LibraryViewModel: ObservableObject {
 
   /// Fetches poster/info and the saved position for a file. Called lazily by each visible card.
   func enrich(_ entry: WebDAVEntry) async {
-    guard !entry.isDirectory else { return }
+    if entry.isDirectory {
+      // A release folder: look up its poster by the title in its name.
+      guard metadata[entry.id] == nil, let info = TraktMedia.folderTitle(entry.name) else { return }
+      if let meta = await MetadataStore.shared.folderMetadata(title: info.title, year: info.year, isSeries: info.isSeries) {
+        metadata[entry.id] = meta
+      }
+      return
+    }
     // The folders the file lives in help when the file name has no show name (e.g. "S01E01.mkv").
     let folders = (WebDAVClient.absoluteURL(forHref: entry.href)?.pathComponents ?? []).dropLast()
     let media = TraktMedia.parse(fileName: entry.name, folders: Array(folders))
@@ -243,6 +271,11 @@ final class LibraryViewModel: ObservableObject {
     if let media {
       meta = await MetadataStore.shared.metadata(for: media)
       if let meta { metadata[entry.id] = meta }
+      // Series episodes get their own wide image for the shelves.
+      if case let .episode(show, s, n) = media {
+        let eps = await MetadataStore.shared.episodes(show: show, season: s)
+        if let url = eps[n]?.stillLargeURL { stills[entry.id] = url }
+      }
     }
     let url = WebDAVClient.absoluteURL(forHref: entry.href)
     if let info = ProgressResolver.resolve(url: url, media: media, runtimeMinutes: meta?.runtimeMinutes, trakt: trakt) {
@@ -398,7 +431,9 @@ struct LibraryView: View {
   private var folderPath: String? {
     guard model.tab == .library, let path = model.current?.path else { return nil }
     let decoded = path.removingPercentEncoding ?? path
-    return decoded == "/" ? nil : decoded
+    let count = model.entries.count
+    let items = count == 1 ? "1 elemento" : "\(count) elementos"
+    return decoded == "/" ? (count > 0 ? items : nil) : (count > 0 ? "\(items) · \(decoded)" : decoded)
   }
 
   private var header: some View {
@@ -429,6 +464,15 @@ struct LibraryView: View {
       .padding(.horizontal, 10).padding(.vertical, 6)
       .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.08)))
       .frame(width: 240)
+      if model.tab == .library {
+        Menu {
+          Picker("Ordenar por", selection: $model.sort) {
+            ForEach(LibrarySort.allCases) { Text($0.rawValue).tag($0) }
+          }.pickerStyle(.inline)
+        } label: { Image(systemName: "arrow.up.arrow.down") }
+          .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+          .help("Ordenar").accessibilityLabel("Ordenar")
+      }
       Button { model.reload() } label: { Image(systemName: "arrow.clockwise") }
         .help("Actualizar (⌘R)").accessibilityLabel("Actualizar")
         .keyboardShortcut("r", modifiers: .command)
@@ -507,31 +551,68 @@ struct LibraryView: View {
     Button("Nueva lista…") { showNewList = true }
   }
 
-  private func section(_ title: String, _ items: [WebDAVEntry]) -> some View {
+  /// A horizontal row of cards, like the shelves in Apple's TV app.
+  private func shelf(_ title: String, _ items: [WebDAVEntry], wide: Bool) -> some View {
     let shown = items.filter(model.matches)
     return Group {
       if !shown.isEmpty {
-        Text(title).font(.title3.bold()).padding(.top, 4)
-        grid(shown)
+        VStack(alignment: .leading, spacing: 12) {
+          Text(title).font(.title3.bold()).padding(.horizontal, 24)
+          ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(alignment: .top, spacing: 18) {
+              ForEach(shown) { entry in
+                Group {
+                  if wide {
+                    ShelfCard(entry: entry, meta: model.metadata[entry.id], still: model.stills[entry.id],
+                              progress: model.progress[entry.id],
+                              badge: model.nextUp.contains(entry.id) ? "Siguiente episodio" : nil,
+                              menuContent: listMenu(for: entry))
+                  } else {
+                    LibraryCard(entry: entry, meta: model.metadata[entry.id], progress: model.progress[entry.id],
+                                menuContent: listMenu(for: entry)).frame(width: 150)
+                  }
+                }
+                .onTapGesture { tapped(entry) }
+                .contextMenu { listMenu(for: entry) }
+                .task { await model.enrich(entry) }
+              }
+            }
+            .padding(.horizontal, 24).padding(.vertical, 10)
+          }
+        }
       }
     }
   }
+
+  /// What the hero features: the first item to continue, otherwise the most recent one.
+  private var heroEntry: WebDAVEntry? { model.resumeEntries.first ?? model.recentEntries.first }
 
   private var homeContent: some View {
     let nothing = model.resumeEntries.isEmpty && model.recentEntries.isEmpty
     return Group {
       if nothing {
-        VStack(spacing: 12) {
-          Text("Aún no has visto nada de este servidor.").foregroundColor(.secondary)
+        stateView(icon: "play.rectangle.on.rectangle", "Aún no has visto nada de este servidor. Lo que empieces a ver aparecerá aquí.") {
           Button("Ir a la biblioteca") { model.tab = .library }
-        }.padding(40).frame(maxWidth: .infinity)
+        }
         Spacer()
       } else {
         ScrollView {
-          VStack(alignment: .leading, spacing: 16) {
-            section("Continuar viendo", model.resumeEntries)
-            section("Vistos recientemente", model.recentEntries)
-          }.padding(24)
+          VStack(alignment: .leading, spacing: 26) {
+            if let hero = heroEntry, model.filter.isEmpty {
+              HeroView(entry: hero, meta: model.metadata[hero.id],
+                       backdrop: model.metadata[hero.id]?.backdropURL ?? model.stills[hero.id],
+                       progress: model.progress[hero.id], isNextUp: model.nextUp.contains(hero.id),
+                       onPlay: { onPlay(hero, false) }, onDetails: { selected = hero })
+                .padding(.horizontal, 24)
+                .task { await model.enrich(hero) }
+            }
+            shelf("Continuar viendo", model.resumeEntries, wide: true)
+            shelf("Vistos recientemente", model.recentEntries, wide: false)
+            ForEach(lists.lists.filter { !$0.items.isEmpty }) { list in
+              shelf("★ \(list.name)", list.items.map(\.entry), wide: false)
+            }
+          }
+          .padding(.vertical, 8).padding(.bottom, 24)
         }
       }
     }
@@ -592,13 +673,17 @@ struct PosterView: View {
 
   var body: some View {
     ZStack {
-      Rectangle().fill(Color.primary.opacity(0.08))
-      if let url {
-        AsyncImage(url: url) { phase in
-          if let image = phase.image { image.resizable().scaledToFill() } else { placeholder }
-        }
+      if isFolder && url == nil {
+        FolderTile()
       } else {
-        placeholder
+        Rectangle().fill(Color.primary.opacity(0.08))
+        if let url {
+          AsyncImage(url: url, transaction: Transaction(animation: .easeIn(duration: 0.25))) { phase in
+            if let image = phase.image { image.resizable().scaledToFill() } else { placeholder }
+          }
+        } else {
+          placeholder
+        }
       }
     }
     .aspectRatio(2.0 / 3.0, contentMode: .fit)
@@ -608,7 +693,7 @@ struct PosterView: View {
   }
 
   private var placeholder: some View {
-    Text(isFolder ? "📁" : "🎬").font(.system(size: 42))
+    Image(systemName: "film").font(.system(size: 34)).foregroundColor(.secondary.opacity(0.6))
   }
 }
 
@@ -643,11 +728,22 @@ struct LibraryCard<MenuContent: View>: View {
             .padding(6).help("Más opciones").accessibilityLabel("Más opciones")
           }
         }
+        .overlay(alignment: .bottomTrailing) {
+          // A folder that got a poster still has to look like a folder.
+          if entry.isDirectory, meta?.posterURL != nil {
+            Image(systemName: "folder.fill").font(.system(size: 15)).foregroundColor(.white)
+              .shadow(color: .black.opacity(0.7), radius: 3).padding(8)
+          }
+        }
       Text(displayTitle).font(.system(size: 12, weight: .semibold)).lineLimit(2)
       HStack(spacing: 6) {
         if let sub = subtitle { Text(sub).foregroundColor(.secondary) }
         if let rating = meta?.rating, rating > 0 { Text("⭐ \(String(format: "%.1f", rating))") }
       }.font(.caption)
+      let tags = MediaQuality.compactBadges(for: entry.name)
+      if !tags.isEmpty {
+        HStack(spacing: 4) { ForEach(Array(tags.prefix(3)), id: \.self) { QualityBadge(text: $0) } }
+      }
       if let badge {
         Text(badge).font(.caption2.weight(.semibold)).foregroundColor(.accentColor).lineLimit(1)
       } else if let progress {
@@ -662,18 +758,7 @@ struct LibraryCard<MenuContent: View>: View {
     .accessibilityAddTraits(.isButton)
   }
 
-  private var displayTitle: String {
-    if let meta {
-      if let s = meta.season, let n = meta.number {
-        // Always say which episode it is, even when TMDB has no title for it (then use the one in the file name).
-        let code = "S\(String(format: "%02d", s))E\(String(format: "%02d", n))"
-        let episode = meta.episodeTitle ?? TraktMedia.episodeTitle(fromFileName: entry.name)
-        return "\(meta.title) · \(code)" + (episode.map { " \($0)" } ?? "")
-      }
-      return meta.title
-    }
-    return entry.name
-  }
+  private var displayTitle: String { libraryDisplayTitle(entry: entry, meta: meta) }
 
   private var subtitle: String? {
     if let y = meta?.year { return String(y) }
@@ -693,46 +778,88 @@ struct LibraryDetailView: View {
   @ObservedObject private var lists = ListsStore.shared
 
   var body: some View {
-    HStack(alignment: .top, spacing: 20) {
-      PosterView(url: meta?.largePosterURL, isFolder: false).frame(width: 220)
-      VStack(alignment: .leading, spacing: 10) {
-        Text(meta?.title ?? entry.name).font(.title2.bold())
-        if let ep = meta?.episodeTitle, let s = meta?.season, let n = meta?.number {
-          Text("Temporada \(s) · Episodio \(n) — \(ep)").foregroundColor(.secondary)
-        }
-        HStack(spacing: 12) {
-          if let y = meta?.year { Text(String(y)) }
-          if let rt = meta?.runtimeMinutes, rt > 0 { Text("\(rt) min") }
-          if let r = meta?.rating, r > 0 { Text("⭐ \(String(format: "%.1f", r))/10") }
-        }.foregroundColor(.secondary)
-        if let genres = meta?.genres, !genres.isEmpty { Text(genres.joined(separator: " · ")).font(.caption) }
-        ScrollView {
-          Text(meta?.overview.isEmpty == false ? meta!.overview : "Sin sinopsis disponible.")
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        if let progress {
-          VStack(alignment: .leading, spacing: 4) {
-            ProgressView(value: min(progress.percent, 100), total: 100)
-            Text(progress.label + (progress.source == .trakt ? " · desde Trakt" : "")).font(.caption)
-          }
-        }
-        HStack {
-          Button(progress != nil ? "▶︎ Continuar" : "▶︎ Reproducir") { onPlay(false) }
-            .keyboardShortcut(.defaultAction)
-          if progress != nil { Button("Desde el inicio") { onPlay(true) } }
-          if meta?.season != nil { Button("Capítulos") { onEpisodes() } }
-          Menu("★ Listas") {
-            ForEach(lists.lists) { list in
-              Button((lists.contains(entry, in: list.id) ? "✓ " : "") + list.name) { lists.toggle(entry, in: list.id) }
-            }
-          }.fixedSize()
-          Spacer()
-          Button("Cerrar", action: onClose).keyboardShortcut(.cancelAction)
+    VStack(spacing: 0) {
+      backdropHeader
+      HStack(alignment: .top, spacing: 22) {
+        // The poster overlaps the backdrop, as in Apple's TV app.
+        PosterView(url: meta?.largePosterURL, isFolder: false).frame(width: 168)
+          .offset(y: -84).padding(.bottom, -84)
+        info
+      }
+      .padding(.horizontal, 26).padding(.bottom, 22)
+    }
+    .frame(width: 860, height: 540)
+  }
+
+  private var backdropHeader: some View {
+    ZStack(alignment: .topTrailing) {
+      Group {
+        if let url = meta?.backdropURL {
+          RemoteImage(url: url)
+        } else {
+          LinearGradient(colors: [Color.accentColor.opacity(0.55), Color.accentColor.opacity(0.15)],
+                         startPoint: .topLeading, endPoint: .bottomTrailing)
         }
       }
+      .frame(height: 230).frame(maxWidth: .infinity).clipped()
+      // Fade into the sheet background so the image melts into the content.
+      LinearGradient(colors: [.clear, Color(nsColor: .windowBackgroundColor)], startPoint: .center, endPoint: .bottom)
+        .frame(height: 230)
+      Button(action: onClose) {
+        Image(systemName: "xmark.circle.fill").font(.system(size: 24)).foregroundColor(.white)
+          .shadow(color: .black.opacity(0.6), radius: 3)
+      }
+      .buttonStyle(.plain).keyboardShortcut(.cancelAction).help("Cerrar (Esc)").accessibilityLabel("Cerrar")
+      .padding(14)
     }
-    .padding(22)
-    .frame(width: 780, height: 420)
+    .frame(height: 230)
+  }
+
+  private var info: some View {
+    VStack(alignment: .leading, spacing: 9) {
+      Text(meta?.title ?? entry.name).font(.system(size: 28, weight: .bold)).lineLimit(2)
+      if let ep = meta?.episodeTitle, let s = meta?.season, let n = meta?.number {
+        Text("Temporada \(s) · Episodio \(n) — \(ep)").foregroundColor(.secondary)
+      } else if let tagline = meta?.tagline, !tagline.isEmpty {
+        Text(tagline).italic().foregroundColor(.secondary).lineLimit(2)
+      }
+      HStack(spacing: 10) {
+        if let y = meta?.year { Text(String(y)) }
+        if let rt = meta?.runtimeMinutes, rt > 0 { Text("\(rt) min") }
+        if let r = meta?.rating, r > 0 { Label(String(format: "%.1f", r), systemImage: "star.fill").foregroundColor(.yellow) }
+        if let size = entry.size, size > 0 { Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file)) }
+      }.font(.system(size: 13)).foregroundColor(.secondary)
+      let badges = MediaQuality.badges(for: entry.name)
+      if !badges.isEmpty || !(meta?.genres.isEmpty ?? true) {
+        HStack(spacing: 6) {
+          ForEach(badges, id: \.self) { QualityBadge(text: $0) }
+          if let genres = meta?.genres, !genres.isEmpty {
+            Text(genres.prefix(3).joined(separator: " · ")).font(.caption).foregroundColor(.secondary)
+          }
+        }
+      }
+      ScrollView {
+        Text(meta?.overview.isEmpty == false ? meta!.overview : "Sin sinopsis disponible.")
+          .font(.system(size: 13)).frame(maxWidth: .infinity, alignment: .leading)
+      }
+      if let progress {
+        VStack(alignment: .leading, spacing: 4) {
+          ProgressView(value: min(progress.percent, 100), total: 100)
+          Text(progress.label + (progress.source == .trakt ? " · desde Trakt" : "")).font(.caption).foregroundColor(.secondary)
+        }
+      }
+      HStack(spacing: 10) {
+        Button { onPlay(false) } label: { Label(progress != nil ? "Continuar" : "Reproducir", systemImage: "play.fill") }
+          .buttonStyle(.borderedProminent).controlSize(.large).keyboardShortcut(.defaultAction)
+        if progress != nil { Button("Desde el inicio") { onPlay(true) }.controlSize(.large) }
+        if meta?.season != nil { Button("Capítulos") { onEpisodes() }.controlSize(.large) }
+        Menu("★ Listas") {
+          ForEach(lists.lists) { list in
+            Button((lists.contains(entry, in: list.id) ? "✓ " : "") + list.name) { lists.toggle(entry, in: list.id) }
+          }
+        }.fixedSize().controlSize(.large)
+      }
+    }
   }
 }
 
