@@ -34,6 +34,15 @@ Nada de esto viene incluido en el código; cada quien pone lo suyo:
 | Nuvio | URL del backend y clave pública de tu Nuvio, correo, contraseña y perfil |
 | Trakt | Client ID de una app propia (el secret es opcional) |
 
+## Instalar como app
+
+```sh
+./install-local.sh
+```
+
+Compila la versión Release para Apple Silicon y la instala como **/Applications/IINA WebDAV.app**, sin tocar tu IINA original.
+El actualizador de IINA está desactivado en este fork: una actualización oficial lo reemplazaría por la IINA normal.
+
 ## Compilar
 
 Igual que IINA (ver `README.md`): `./other/download_libs.sh` y abrir `iina.xcodeproj` en Xcode.
