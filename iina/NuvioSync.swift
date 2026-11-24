@@ -77,6 +77,16 @@ enum NuvioConfig {
     }
   }
 
+  /// Result of the last progress report ("12:31:05 · OK …" or the error), shown in the settings.
+  static var lastStatus: String {
+    get { UserDefaults.standard.string(forKey: "nuvioLastStatus") ?? "" }
+    set { UserDefaults.standard.set(newValue, forKey: "nuvioLastStatus") }
+  }
+  static func record(_ text: String) {
+    let f = DateFormatter(); f.dateFormat = "HH:mm:ss"
+    lastStatus = "\(f.string(from: Date())) · \(text)"
+  }
+
   static var isConfigured: Bool {
     !backendURL.isEmpty && !anonKey.isEmpty && !email.isEmpty && !password.isEmpty
   }
@@ -235,15 +245,16 @@ final class NuvioAPI {
     let key = existing ?? ((identity.season != nil && identity.episode != nil)
                            ? "\(identity.contentId)_s\(identity.season!)e\(identity.episode!)" : identity.contentId)
 
+    // All numbers must be integers: the backend columns are integers and reject "123.45".
     let entry: [String: Any] = [
       "content_id": identity.contentId,
       "content_type": identity.contentType,
       "video_id": identity.videoId,
-      "season": identity.season as Any? ?? NSNull(),
-      "episode": identity.episode as Any? ?? NSNull(),
-      "position": completed && duration > 0 ? duration : position,
-      "duration": duration,
-      "last_watched": Date().timeIntervalSince1970 * 1000,
+      "season": identity.season.map { $0 as Any } ?? NSNull(),
+      "episode": identity.episode.map { $0 as Any } ?? NSNull(),
+      "position": Int64(completed && duration > 0 ? duration : position),
+      "duration": Int64(duration),
+      "last_watched": Int64((Date().timeIntervalSince1970 * 1000).rounded()),
       "progress_key": key,
     ]
     _ = try await rpc("sync_push_watch_progress", [
@@ -287,6 +298,7 @@ final class NuvioSync {
     Task {
       guard let meta = await MetadataStore.shared.metadata(for: media), let imdb = meta.imdbId, !imdb.isEmpty else {
         Logger.log("Nuvio: no IMDb id for \(media), not reporting", level: .warning)
+        NuvioConfig.record("no se encontró el código IMDb de \(media) en TMDB (¿falta la API key de TMDB?)")
         return
       }
       let ident: NuvioIdentity
@@ -296,7 +308,9 @@ final class NuvioSync {
       case let .episode(_, s, n):
         ident = NuvioIdentity(contentId: imdb, contentType: "series", videoId: "\(imdb):\(s):\(n)", season: s, episode: n)
       }
-      let known = (try? await NuvioAPI.shared.pullProgress(profile: NuvioConfig.profileIndex)) ?? []
+      var known: [NuvioProgressRow] = []
+      do { known = try await NuvioAPI.shared.pullProgress(profile: NuvioConfig.profileIndex) }
+      catch { NuvioConfig.record("ERROR al leer el progreso: \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)") }
       DispatchQueue.main.async { [weak self, weak player] in
         guard let self, let player, self.token == myToken else { return }
         self.identity = ident
@@ -310,6 +324,7 @@ final class NuvioSync {
           Logger.log("Nuvio: resuming \(ident.videoId) at \(Int(row.positionMs / 1000)) s from the saved position", level: .debug)
           player.seek(absoluteSecond: row.positionMs / 1000)
         }
+        if let snap = self.snapshot(of: player) { self.lastPositionMs = snap.pos; self.lastDurationMs = snap.dur }
         self.report(ended: false)
         self.timer?.invalidate()
         self.timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self, weak player] _ in
@@ -358,8 +373,10 @@ final class NuvioSync {
         let stored = try await NuvioAPI.shared.push(profile: NuvioConfig.profileIndex, identity: identity,
                                                     positionMs: pos, durationMs: dur, ended: ended, knownRows: known)
         Logger.log("Nuvio: pushed \(identity.videoId) \(Int(pos / 1000))s/\(Int(dur / 1000))s stored=\(stored)", level: .debug)
+        if stored { NuvioConfig.record("OK \(identity.videoId) en \(Int(pos / 1000)) s") }
       } catch {
         Logger.log("Nuvio: push failed: \(error)", level: .error)
+        NuvioConfig.record("ERROR al enviar \(identity.videoId): \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)")
       }
     }
   }

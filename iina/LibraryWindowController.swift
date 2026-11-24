@@ -184,8 +184,10 @@ final class LibraryViewModel: ObservableObject {
       .sorted { $0.addedDate > $1.addedDate }
     var resume: [(date: Date, entry: WebDAVEntry)] = []
     var others: [WebDAVEntry] = []
-    var finished: [(date: Date, url: URL)] = []
-    var seenShows = Set<String>()
+    var finished: [(date: Date, url: URL, showKey: String, entryID: String)] = []
+    // A series appears once: its most recent history item decides where (in progress -> "Continuar viendo",
+    // finished -> "Vistos recientemente", plus its next episode in "Continuar viendo"). Older episodes are ignored.
+    var decidedShows = Set<String>()
     for item in recent {
       let href = URLComponents(url: item.url, resolvingAgainstBaseURL: false)?.percentEncodedPath ?? item.url.path
       let name = item.url.lastPathComponent
@@ -194,18 +196,16 @@ final class LibraryViewModel: ObservableObject {
       let media = TraktMedia.parse(fileName: name, folders: Array(item.url.pathComponents.dropLast()))
       var showKey: String?
       if case let .episode(show, _, _)? = media { showKey = TraktMedia.normalize(show) }
+      if let showKey {
+        guard decidedShows.insert(showKey).inserted else { continue }
+      }
       if let info = ProgressResolver.resolve(url: item.url, media: media, runtimeMinutes: nil, trakt: trakt),
          info.percent < 95 {
         resume.append((item.addedDate, entry))
         progress[entry.id] = info
-        if let showKey { seenShows.insert(showKey) }      // already in progress: no "next" needed
       } else {
         others.append(entry)
-        // Only the most recent entry of each show can have a "next episode".
-        if let showKey, !seenShows.contains(showKey) {
-          seenShows.insert(showKey)
-          finished.append((item.addedDate, item.url))
-        }
+        if let showKey { finished.append((item.addedDate, item.url, showKey, entry.id)) }
       }
     }
     resumeEntries = resume.prefix(40).map(\.entry)
@@ -217,15 +217,18 @@ final class LibraryViewModel: ObservableObject {
     let base = resume
     nextUpTask = Task {
       var extra: [(date: Date, entry: WebDAVEntry)] = []
+      var represented = Set<String>()       // finished entries whose series now shows its next episode instead
       for item in finished.prefix(8) {
         if Task.isCancelled { return }
         guard let next = await finder.next(after: item.url),
               !base.contains(where: { $0.entry.id == next.id }) else { continue }
         extra.append((item.date, next))
+        represented.insert(item.entryID)
       }
       if Task.isCancelled || extra.isEmpty { return }
       resumeEntries = (base + extra).sorted { $0.date > $1.date }.prefix(40).map(\.entry)
       nextUp = Set(extra.map(\.entry.id))
+      recentEntries = recentEntries.filter { !represented.contains($0.id) }   // don't show the same series twice
     }
   }
 
@@ -572,8 +575,11 @@ struct LibraryCard: View {
 
   private var displayTitle: String {
     if let meta {
-      if let ep = meta.episodeTitle, let s = meta.season, let n = meta.number {
-        return "\(meta.title) · S\(String(format: "%02d", s))E\(String(format: "%02d", n)) \(ep)"
+      if let s = meta.season, let n = meta.number {
+        // Always say which episode it is, even when TMDB has no title for it (then use the one in the file name).
+        let code = "S\(String(format: "%02d", s))E\(String(format: "%02d", n))"
+        let episode = meta.episodeTitle ?? TraktMedia.episodeTitle(fromFileName: entry.name)
+        return "\(meta.title) · \(code)" + (episode.map { " \($0)" } ?? "")
       }
       return meta.title
     }
@@ -733,6 +739,9 @@ struct WebDAVSettingsView: View {
         Button(nuvioBusy ? "Probando…" : "Probar conexión") { testNuvio() }
           .disabled(nuvioBusy || nuvioURL.isEmpty || nuvioKey.isEmpty || nuvioEmail.isEmpty || nuvioPassword.isEmpty)
         Text(nuvioStatus).font(.caption).foregroundColor(.secondary).lineLimit(3)
+      }
+      if !NuvioConfig.lastStatus.isEmpty {
+        Text("Último envío: \(NuvioConfig.lastStatus)").font(.caption).foregroundColor(.secondary).lineLimit(3)
       }
 
       Divider().padding(.vertical, 4)
