@@ -30,6 +30,10 @@ class KeychainAccess {
 
     static let openSubAccount = ServiceName(rawValue: "IINA OpenSubtitles Account")
     static let httpAuth = ServiceName(rawValue: "IINA Saved HTTP Password")
+    static let webdav = ServiceName(rawValue: "IINA WebDAV Library")
+    static let traktSecret = ServiceName(rawValue: "IINA Trakt Client Secret")
+    static let tmdbKey = ServiceName(rawValue: "IINA TMDB API Key")
+    static let traktToken = ServiceName(rawValue: "IINA Trakt Token")
   }
 
   static func write(username: String, password: String, forService serviceName: ServiceName, server: String? = nil, port: Int? = nil) throws {

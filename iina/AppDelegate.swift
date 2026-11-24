@@ -339,6 +339,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate {
   }
 
   func applicationDidFinishLaunching(_ aNotification: Notification) {
+    installLibraryMenuItem()
     Logger.log("App launched")
 
     if !isReady {
@@ -434,6 +435,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate {
     let action: Preference.ActionAfterLaunch = Preference.ActionAfterLaunch(rawValue: actionRawValue) ?? .welcomeWindow
     switch action {
     case .welcomeWindow:
+      // Fork: show the WebDAV library instead of the welcome window (also on Dock reopen). When the server isn't
+      // configured yet, the library opens its settings sheet.
+      if WebDAVConfig.openOnLaunch {
+        LibraryWindowController.shared.show()
+        return
+      }
       let window = PlayerCore.first.initialWindow!
       window.showWindow(nil)
       if checkingForUpdatedData {
@@ -445,6 +452,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate {
     default:
       break
     }
+  }
+
+  /// Adds "Biblioteca WebDAV…" (Cmd+Shift+L) at the top of the File menu, without touching the xib.
+  private func installLibraryMenuItem() {
+    guard let fileMenu = NSApp.mainMenu?.item(at: 1)?.submenu else { return }
+    let item = NSMenuItem(title: "Biblioteca WebDAV…", action: #selector(showLibrary(_:)), keyEquivalent: "l")
+    item.keyEquivalentModifierMask = [.command, .shift]
+    item.target = self
+    fileMenu.insertItem(item, at: 0)
+    fileMenu.insertItem(.separator(), at: 1)
+  }
+
+  @objc func showLibrary(_ sender: Any?) {
+    LibraryWindowController.shared.show()
   }
 
   func applicationShouldAutomaticallyLocalizeKeyEquivalents(_ application: NSApplication) -> Bool {

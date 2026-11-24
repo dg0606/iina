@@ -2001,6 +2001,7 @@ class PlayerCore: NSObject {
   }
 
   func savePlaybackPosition() {
+    TraktScrobbler.shared.playbackEnding(self)
     guard mpv.getFlag(MPVOption.WatchLater.savePositionOnQuit) else { return }
 
     // The player must be active to be able to save the watch later configuration.
@@ -2174,6 +2175,7 @@ class PlayerCore: NSObject {
     log("File loaded")
 
     info.state = .loaded
+    TraktScrobbler.shared.fileLoaded(self)
 
     // Must force drawing to cover the case where this player was previously used to play a video
     // and is now playing an audio file without an album cover and without using music mode.
@@ -2409,6 +2411,7 @@ class PlayerCore: NSObject {
       // position must be updated before notifying the manager.
       syncUI(.time)
       info.state = paused ? .paused : .playing
+      TraktScrobbler.shared.pauseChanged(self, paused: paused)
       refreshSyncUITimer()
       // Follow energy efficiency best practices and ensure IINA is absolutely idle when the video
       // is paused to avoid wasting energy with needless processing. If paused shutdown the timer
